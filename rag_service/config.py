@@ -1,0 +1,44 @@
+"""Configuration, read from environment variables only (no personal defaults)."""
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_DEFAULT_EXCLUDES = (".git", ".obsidian", ".trash")
+
+
+class ConfigError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Config:
+    vault_root: Path
+    index_dir: Path
+    exclude_dirs: tuple[str, ...]
+
+
+def load_config(env=None) -> Config:
+    env = os.environ if env is None else env
+
+    raw_root = env.get("RAG_VAULT_ROOT", "").strip()
+    if not raw_root:
+        raise ConfigError("RAG_VAULT_ROOT is not set (see .env.example)")
+    vault_root = Path(raw_root).expanduser().resolve()
+    if not vault_root.is_dir():
+        raise ConfigError(f"RAG_VAULT_ROOT is not a directory: {vault_root}")
+
+    raw_index = env.get("RAG_INDEX_DIR", "").strip()
+    index_dir = Path(raw_index).expanduser().resolve() if raw_index else _PROJECT_ROOT / "data" / "index"
+    if index_dir == vault_root or vault_root in index_dir.parents:
+        raise ConfigError(
+            f"RAG_INDEX_DIR must be outside RAG_VAULT_ROOT (self-indexing): {index_dir}"
+        )
+
+    raw_ex = env.get("RAG_EXCLUDE_DIRS")
+    exclude = (
+        tuple(p.strip() for p in raw_ex.split(",") if p.strip())
+        if raw_ex is not None
+        else _DEFAULT_EXCLUDES
+    )
+    return Config(vault_root=vault_root, index_dir=index_dir, exclude_dirs=exclude)
