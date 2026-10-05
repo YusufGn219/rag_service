@@ -20,7 +20,10 @@ def snapshot(cfg: Config, paths: list[Path]) -> Snapshot:
     """Current mtime/size of each note, keyed by path relative to the vault root."""
     snap: Snapshot = {}
     for p in paths:
-        st = p.stat()
+        try:
+            st = p.stat()
+        except OSError:
+            continue  # vanished between the scan and now
         key = p.relative_to(cfg.vault_root).as_posix()
         snap[key] = {"mtime_ns": st.st_mtime_ns, "size": st.st_size}
     return snap

@@ -1,9 +1,13 @@
 """Keyword search: a Turkish-aware tokenizer and a small BM25 index."""
+import json
 import re
 import unicodedata
 from collections import Counter
 
 import numpy as np
+
+# Bump when tokenize() changes, so stored indexes built with the old rules get rebuilt.
+TOKENIZER_VERSION = 1
 
 _APOSTROPHE_SUFFIX = re.compile(r"['’‘`´]\w*")
 _RUN = re.compile(r"\w+")
@@ -44,7 +48,6 @@ class BM25Index:
         self.k1, self.b = k1, b
         self.n = len(docs)
         self.lengths = np.array([len(d) for d in docs], dtype=np.float64)
-        self.avgdl = float(self.lengths.mean()) if self.n and self.lengths.sum() else 1.0
 
         ids: dict[str, list[int]] = {}
         tfs: dict[str, list[int]] = {}
@@ -55,10 +58,52 @@ class BM25Index:
         self._postings = {
             t: (np.array(ids[t], dtype=np.int64), np.array(tfs[t], dtype=np.float64)) for t in ids
         }
+        self._finish()
+
+    def _finish(self) -> None:
+        """Derive avgdl and idf from lengths and postings (also used after loading)."""
+        self.avgdl = float(self.lengths.mean()) if self.n and self.lengths.sum() else 1.0
         self._idf = {
             t: float(np.log(1 + (self.n - len(p[0]) + 0.5) / (len(p[0]) + 0.5)))
             for t, p in self._postings.items()
         }
+
+    def to_arrays(self) -> dict[str, np.ndarray]:
+        """Flat numpy form for saving (postings concatenated, with per-term offsets)."""
+        terms = sorted(self._postings)
+        offsets = np.zeros(len(terms) + 1, dtype=np.int64)
+        for i, t in enumerate(terms):
+            offsets[i + 1] = offsets[i] + len(self._postings[t][0])
+        if terms:
+            doc_ids = np.concatenate([self._postings[t][0] for t in terms])
+            tfs = np.concatenate([self._postings[t][1] for t in terms])
+        else:
+            doc_ids, tfs = np.zeros(0, dtype=np.int64), np.zeros(0)
+        return {
+            "terms": np.frombuffer(json.dumps(terms, ensure_ascii=False).encode("utf-8"), dtype=np.uint8),
+            "offsets": offsets,
+            "doc_ids": doc_ids.astype(np.int32),
+            "tfs": tfs.astype(np.float32),
+            "lengths": self.lengths.astype(np.float32),
+            "params": np.array([self.k1, self.b], dtype=np.float64),
+        }
+
+    @classmethod
+    def from_arrays(cls, arrays) -> "BM25Index":
+        self = cls.__new__(cls)
+        self.k1, self.b = (float(x) for x in arrays["params"])
+        self.lengths = np.asarray(arrays["lengths"], dtype=np.float64)
+        self.n = len(self.lengths)
+        terms = json.loads(np.asarray(arrays["terms"], dtype=np.uint8).tobytes().decode("utf-8"))
+        offsets = np.asarray(arrays["offsets"])
+        doc_ids = np.asarray(arrays["doc_ids"], dtype=np.int64)
+        tfs = np.asarray(arrays["tfs"], dtype=np.float64)
+        self._postings = {
+            t: (doc_ids[offsets[i]:offsets[i + 1]], tfs[offsets[i]:offsets[i + 1]])
+            for i, t in enumerate(terms)
+        }
+        self._finish()
+        return self
 
     def scores(self, query_tokens: list[str]) -> np.ndarray:
         out = np.zeros(self.n, dtype=np.float64)

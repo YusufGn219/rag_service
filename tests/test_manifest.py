@@ -93,3 +93,11 @@ def test_manifest_file_is_valid_json(tmp_path):
     save_manifest(cfg, {"a.md": {"mtime_ns": 1, "size": 2}})
     data = json.loads((cfg.index_dir / "manifest.json").read_text(encoding="utf-8"))
     assert data == {"a.md": {"mtime_ns": 1, "size": 2}}
+
+
+def test_snapshot_skips_files_that_vanished(tmp_path):
+    vault, cfg = _setup(tmp_path)
+    _write(vault / "a.md")
+    gone = vault / "gone.md"
+    snap = snapshot(cfg, [vault.resolve() / "a.md", gone.resolve()])
+    assert list(snap) == ["a.md"]
