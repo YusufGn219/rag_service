@@ -170,9 +170,30 @@ def test_embed_text_contains_tags_heading_and_body():
     assert c.text in c.embed_text
 
 
-def test_embed_text_without_tags_or_heading_is_just_text():
+def test_embed_text_without_tags_or_heading_is_note_title_plus_text():
     c = chunk_note("n.md", "sadece duz metin burada")[0]
-    assert c.embed_text == c.text
+    assert c.embed_text == "Note: n\n" + c.text
+
+
+def test_embed_text_contains_note_title_and_folder():
+    path = "Claude_Code/creative-arv/04 Güncel Durum (2026-07-15).md"
+    c = chunk_note(path, "# Ozet\n" + _words(80))[0]
+    assert "Note: 04 Güncel Durum (2026-07-15)\n" in c.embed_text
+    assert "Folder: Claude_Code > creative-arv\n" in c.embed_text
+    assert ".md" not in c.embed_text
+
+
+def test_embed_text_has_no_folder_line_for_top_level_note():
+    c = chunk_note("n.md", "# A\n" + _words(80))[0]
+    assert "Folder:" not in c.embed_text
+
+
+def test_long_note_path_still_fits_budget():
+    path = "klasor_xxxxxxxxxx/alt_klasor_xxxxxxxxxx/Cok Uzun Bir Not Adi (2026-09-25).md"
+    text = "# Baslik\n" + "\n\n".join(_words(30, f"w{i}") for i in range(12))
+    chunks = chunk_note(path, text, **_kw())
+    assert len(chunks) > 1
+    assert all(len(c.embed_text) <= 200 for c in chunks)
 
 
 # ---- custom (real-tokenizer-style) counter ----

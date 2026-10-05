@@ -28,13 +28,27 @@ class Chunk:
 
     @property
     def embed_text(self) -> str:
-        """What the embedding model and BM25 should see: tags + heading path + body."""
-        return _header(self.tags, self.heading_path) + self.text
+        """What the embedding model and BM25 should see: note title, folder, tags, heading path, body."""
+        return _header(self.path, self.tags, self.heading_path) + self.text
 
 
-def _header(tags: tuple[str, ...], heading_path: str) -> str:
+def note_title(path: str) -> str:
+    """File name without the .md extension: 'a/b/Not (2026-09-25).md' -> 'Not (2026-09-25)'."""
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    return name[:-3] if name.lower().endswith(".md") else name
+
+
+def _folder(path: str) -> str:
+    parts = path.replace("\\", "/").split("/")[:-1]
+    return " > ".join(p for p in parts if p)
+
+
+def _header(path: str, tags: tuple[str, ...], heading_path: str) -> str:
     """The lines put in front of a chunk's body in embed_text (each ends with a newline)."""
-    out = ""
+    out = "Note: " + note_title(path) + "\n"
+    folder = _folder(path)
+    if folder:
+        out += "Folder: " + folder + "\n"
     if tags:
         out += "Tags: " + ", ".join(tags) + "\n"
     if heading_path:
@@ -281,7 +295,7 @@ def chunk_note(
     def limit_for(heading_path: str) -> int:
         # the tags/heading lines are embedded too, so they use part of the budget;
         # the floor keeps a pathologically long header from starving the body entirely
-        header = count(_header(tags, heading_path))
+        header = count(_header(path, tags, heading_path))
         return max(max_tokens - header, max_tokens // 4)
 
     sections = _merge_small(_split_sections(body), limit_for, count, min_tokens)

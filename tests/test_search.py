@@ -1,10 +1,12 @@
+from datetime import date
+
 import numpy as np
 import pytest
 
 from rag_service.bm25 import index_chunks
 from rag_service.chunker import Chunk
 from rag_service.config import load_config
-from rag_service.search import Searcher, rrf
+from rag_service.search import NoteHit, Searcher, rrf
 from rag_service.store import IndexData, save_index
 
 # 3-d "meaning space": x = animals, y = vehicles, z = finance
@@ -137,3 +139,110 @@ def test_from_config_loads_saved_index_and_fails_clearly_without_one(tmp_path):
     save_index(cfg, IndexData(chunks=chunks, vectors=np.stack([ANIMALS]),
                               bm25=index_chunks(chunks), settings={}))
     assert Searcher.from_config(cfg, FakeEmbedder()).search("evcil hayvan")[0].chunk.path == "kedi.md"
+
+
+# ---- recency ----
+
+TODAY = date(2026, 10, 5)
+
+
+def _dated_searcher(**kw):
+    chunks = [
+        _chunk("eski (2025-01-01).md", 0, "proje durumu raporu"),  # 0
+        _chunk("yeni (2026-10-01).md", 0, "proje durumu raporu"),  # 1 identical text
+        _chunk("tarihsiz.md", 0, "proje durumu raporu"),  # 2
+    ]
+    vectors = np.stack([ANIMALS] * 3)
+    data = IndexData(chunks=chunks, vectors=vectors, bm25=index_chunks(chunks), settings={})
+    return Searcher(data, FakeEmbedder(), today=TODAY, **kw)
+
+
+def test_without_recency_words_dates_change_nothing():
+    s = _dated_searcher()
+    assert s.search("proje durumu", k=3) == s.search("proje durumu", k=3, recency=False)
+
+
+def test_recency_query_lifts_newer_note():
+    paths = [h.chunk.path for h in _dated_searcher().search("güncel proje durumu", k=3)]
+    assert paths[0] == "yeni (2026-10-01).md"
+
+
+def test_recency_can_be_forced_on_or_off():
+    s = _dated_searcher()
+    assert s.search("proje durumu", k=1, recency=True)[0].chunk.path == "yeni (2026-10-01).md"
+    assert s.search("güncel proje durumu", k=1, recency=False)[0].chunk.path == "eski (2025-01-01).md"
+
+
+def test_recency_boost_is_small_and_never_beats_a_much_better_match():
+    chunks = [
+        _chunk("alakali.md", 0, "kredi faiz oranları"),  # 0 matches the question well
+        _chunk("yeni (2026-10-04).md", 0, "tamamen baska bir konu"),  # 1
+    ]
+    vectors = np.stack([FINANCE, ANIMALS])
+    data = IndexData(chunks=chunks, vectors=vectors, bm25=index_chunks(chunks), settings={})
+    s = Searcher(data, FakeEmbedder(), today=TODAY)
+    assert s.search("güncel kredi", k=1)[0].chunk.path == "alakali.md"
+
+
+# ---- note-level results ----
+
+def test_search_notes_returns_one_result_per_note_best_chunk_first():
+    notes = _searcher().search_notes("evcil hayvan", k=5)
+    paths = [n.path for n in notes]
+    assert len(paths) == len(set(paths))
+    kedi = next(n for n in notes if n.path == "kedi.md")
+    assert isinstance(kedi, NoteHit)
+    assert len(kedi.hits) == 2 and kedi.best is kedi.hits[0]
+    assert kedi.title == "kedi"
+
+
+def test_search_notes_k_limits_notes_not_chunks():
+    assert len(_searcher().search_notes("evcil hayvan", k=1)) == 1
+
+
+def test_note_with_several_matching_chunks_beats_note_with_one():
+    chunks = [
+        _chunk("tek.md", 0, "rapor ozeti"),  # 0
+        _chunk("cok.md", 0, "rapor ozeti"),  # 1
+        _chunk("cok.md", 1, "rapor ozeti"),  # 2
+        _chunk("cok.md", 2, "rapor ozeti"),  # 3
+    ]
+    vectors = np.stack([ANIMALS] * 4)
+    data = IndexData(chunks=chunks, vectors=vectors, bm25=index_chunks(chunks), settings={})
+    notes = Searcher(data, FakeEmbedder()).search_notes("rapor", k=2)
+    assert [n.path for n in notes] == ["cok.md", "tek.md"]
+
+
+def test_search_notes_carries_date_and_applies_recency():
+    notes = _dated_searcher().search_notes("güncel proje durumu", k=3)
+    assert notes[0].path == "yeni (2026-10-01).md"
+    assert notes[0].date == date(2026, 10, 1)
+    assert notes[-1].date is None or notes[-1].path != notes[0].path
+
+
+def test_search_notes_empty_query_and_unknown_mode():
+    assert _searcher().search_notes("  ") == []
+    with pytest.raises(ValueError, match="mode"):
+        _searcher().search_notes("kredi", mode="magic")
+
+
+# ---- reading a whole note ----
+
+def test_read_note_returns_file_text_and_refuses_unknown_keys(tmp_path):
+    vault = tmp_path / "v"
+    vault.mkdir()
+    (vault / "kedi.md").write_text("# Kedi\nuyuyor", encoding="utf-8", newline="\n")
+    (tmp_path / "gizli.md").write_text("gizli", encoding="utf-8")
+    cfg = load_config({"RAG_VAULT_ROOT": str(vault), "RAG_INDEX_DIR": str(tmp_path / "idx")})
+    chunks = [_chunk("kedi.md", 0, "kedi uyuyor")]
+    save_index(cfg, IndexData(chunks=chunks, vectors=np.stack([ANIMALS]),
+                              bm25=index_chunks(chunks), settings={}))
+    s = Searcher.from_config(cfg, FakeEmbedder())
+    assert s.read_note("kedi.md") == "# Kedi\nuyuyor"
+    with pytest.raises(KeyError):
+        s.read_note("../gizli.md")
+
+
+def test_read_note_without_a_vault_resolver_fails_clearly():
+    with pytest.raises(RuntimeError, match="vault"):
+        _searcher().read_note("kedi.md")

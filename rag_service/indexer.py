@@ -21,7 +21,7 @@ from rag_service.manifest import compute_changes, load_manifest, save_manifest, 
 from rag_service.scanner import scan_notes
 from rag_service.store import IndexData, load_index, save_index
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 _EMBED_BATCH = 256
 
 
