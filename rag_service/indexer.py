@@ -81,7 +81,7 @@ def run_index(
     new_chunks = []
     for rel in changes.changed:
         try:
-            text = (cfg.vault_root / rel).read_text(encoding="utf-8", errors="replace")
+            text = cfg.resolve_key(rel).read_text(encoding="utf-8", errors="replace")
         except OSError:
             snap.pop(rel, None)  # vanished since the scan; treat as deleted next time
             continue

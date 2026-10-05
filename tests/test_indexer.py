@@ -227,3 +227,22 @@ def test_progress_callback_reports_totals(tmp_path):
     calls = []
     run_index(cfg, FakeEmbedder(), progress=lambda done, total: calls.append((done, total)))
     assert calls and calls[-1][0] == calls[-1][1] > 0
+
+
+def test_indexes_several_roots_and_updates_only_the_changed_one(tmp_path):
+    import os
+
+    a, b = tmp_path / "alfa", tmp_path / "beta"
+    _note(a, "a.md", BODY)
+    nb = _note(b, "sub/b.md", "# B\n" + "eski " * 80)
+    cfg = load_config({"RAG_VAULT_ROOT": os.pathsep.join([str(a), str(b)]),
+                       "RAG_INDEX_DIR": str(tmp_path / "idx")})
+    run_index(cfg, FakeEmbedder())
+    assert {c.path for c in load_index(cfg).chunks} == {"alfa/a.md", "beta/sub/b.md"}
+
+    _note(b, "sub/b.md", "# B\n" + "yepyeni " * 80)
+    _bump_mtime(nb)
+    emb = FakeEmbedder()
+    stats = run_index(cfg, emb)
+    assert stats.changed == 1 and all("yepyeni" in t for t in emb.embedded)
+    assert load_index(cfg).bm25.search(tokenize("yepyeni"))

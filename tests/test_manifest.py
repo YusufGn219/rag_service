@@ -101,3 +101,14 @@ def test_snapshot_skips_files_that_vanished(tmp_path):
     gone = vault / "gone.md"
     snap = snapshot(cfg, [vault.resolve() / "a.md", gone.resolve()])
     assert list(snap) == ["a.md"]
+
+
+def test_snapshot_keys_are_prefixed_with_several_roots(tmp_path):
+    import os
+
+    a, b = tmp_path / "alfa", tmp_path / "beta"
+    _write(a / "x.md")
+    _write(b / "sub" / "y.md")
+    cfg = load_config({"RAG_VAULT_ROOT": os.pathsep.join([str(a), str(b)]),
+                       "RAG_INDEX_DIR": str(tmp_path / "idx")})
+    assert sorted(snapshot(cfg, scan_notes(cfg))) == ["alfa/x.md", "beta/sub/y.md"]

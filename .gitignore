@@ -8,3 +8,6 @@ data/index/*
 
 # Downloaded embedding model files (hundreds of MB, never commit)
 data/models/
+
+# Personal evaluation questions (note names are private)
+data/eval/

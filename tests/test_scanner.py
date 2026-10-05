@@ -82,3 +82,17 @@ def test_exclude_path_tolerates_backslash_and_edge_slashes(tmp_path):
     _touch(tmp_path, "A/B/x.md")
     _touch(tmp_path, "keep.md")
     assert [p.name for p in _scan(tmp_path, RAG_EXCLUDE_DIRS="/A\\B/")] == ["keep.md"]
+
+
+def test_scans_every_root_and_applies_excludes_per_root(tmp_path):
+    import os
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    _touch(a, "one.md")
+    _touch(a, "logs/skip.md")
+    _touch(b, "two.md")
+    _touch(b, "logs/skip2.md")
+    _touch(b, ".obsidian/x.md")
+    cfg = load_config({"RAG_VAULT_ROOT": os.pathsep.join([str(a), str(b)]),
+                       "RAG_INDEX_DIR": str(tmp_path / "idx"), "RAG_EXCLUDE_DIRS": ".obsidian,logs"})
+    assert sorted(p.name for p in scan_notes(cfg)) == ["one.md", "two.md"]

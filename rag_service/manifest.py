@@ -17,14 +17,14 @@ class Changes:
 
 
 def snapshot(cfg: Config, paths: list[Path]) -> Snapshot:
-    """Current mtime/size of each note, keyed by path relative to the vault root."""
+    """Current mtime/size of each note, keyed by note key (path relative to its vault root)."""
     snap: Snapshot = {}
     for p in paths:
         try:
             st = p.stat()
         except OSError:
             continue  # vanished between the scan and now
-        key = p.relative_to(cfg.vault_root).as_posix()
+        key = cfg.note_key(p)
         snap[key] = {"mtime_ns": st.st_mtime_ns, "size": st.st_size}
     return snap
 
