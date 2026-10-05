@@ -1,17 +1,19 @@
 """Split a markdown note into overlapping, heading-aware chunks."""
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 DEFAULT_MAX_TOKENS = 400
 DEFAULT_OVERLAP_TOKENS = 50
 DEFAULT_MIN_TOKENS = 60
 
-# Rough estimate until the real embedding tokenizer is wired in (kept in one place on purpose).
+# Rough default estimate; pass Embedder.count_tokens to chunk_note for exact sizing.
 _TOKENS_PER_WORD = 1.5
 
 _FRONTMATTER = re.compile(r"---[ \t]*\n(.*?)\n---[ \t]*(?:\n|$)", re.S)
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
+_MAX_HEADING_CHARS = 150
 _INLINE_CODE = re.compile(r"`[^`]*`")
 _INLINE_TAG = re.compile(r"(?<![\w#&/])#([^\W\d_][\w/-]*)")
 
@@ -27,13 +29,17 @@ class Chunk:
     @property
     def embed_text(self) -> str:
         """What the embedding model and BM25 should see: tags + heading path + body."""
-        parts = []
-        if self.tags:
-            parts.append("Tags: " + ", ".join(self.tags))
-        if self.heading_path:
-            parts.append("Section: " + self.heading_path)
-        parts.append(self.text)
-        return "\n".join(parts)
+        return _header(self.tags, self.heading_path) + self.text
+
+
+def _header(tags: tuple[str, ...], heading_path: str) -> str:
+    """The lines put in front of a chunk's body in embed_text (each ends with a newline)."""
+    out = ""
+    if tags:
+        out += "Tags: " + ", ".join(tags) + "\n"
+    if heading_path:
+        out += "Section: " + heading_path + "\n"
+    return out
 
 
 def count_tokens(text: str) -> int:
@@ -120,6 +126,8 @@ def _split_sections(body: str) -> list[tuple[str, str]]:
         if _is_fence(line):
             in_fence = not in_fence
         m = None if in_fence else _HEADING.match(line)
+        if m and len(m.group(2)) > _MAX_HEADING_CHARS:
+            m = None  # a whole note pasted onto one "## ..." line is body text, not a title
         if m:
             flush()
             level = len(m.group(1))
@@ -132,28 +140,33 @@ def _split_sections(body: str) -> list[tuple[str, str]]:
     return sections
 
 
-def _merge_small(sections: list[tuple[str, str]], max_tokens: int, min_tokens: int):
+def _merge_small(sections, limit_for, count, min_tokens: int):
+    def join(a, b):
+        # the section with more content names the merged chunk
+        path = a[0] if count(a[1]) >= count(b[1]) else b[0]
+        return path, a[1] + "\n\n" + b[1]
+
     merged: list[tuple[str, str]] = []
     carry: tuple[str, str] | None = None
-    for path, text in sections:
+    for sec in sections:
         if carry:
-            joined = carry[1] + "\n\n" + text
-            if count_tokens(joined) <= max_tokens:
-                # the section with more content names the merged chunk
-                if count_tokens(carry[1]) >= count_tokens(text):
-                    path = carry[0]
-                text = joined
+            joined = join(carry, sec)
+            if count(joined[1]) <= limit_for(joined[0]):
+                sec = joined
             else:
                 merged.append(carry)
             carry = None
-        if count_tokens(text) < min_tokens:
-            carry = (path, text)
+        if count(sec[1]) < min_tokens:
+            carry = sec
         else:
-            merged.append((path, text))
+            merged.append(sec)
     if carry:
-        if merged and count_tokens(merged[-1][1] + "\n\n" + carry[1]) <= max_tokens:
-            merged[-1] = (merged[-1][0], merged[-1][1] + "\n\n" + carry[1])
-        else:
+        if merged:
+            joined = join(merged[-1], carry)
+            if count(joined[1]) <= limit_for(joined[0]):
+                merged[-1] = joined
+                carry = None
+        if carry:
             merged.append(carry)
     return merged
 
@@ -176,39 +189,70 @@ def _paragraphs(text: str) -> list[str]:
     return paras
 
 
-def _window_words(text: str, max_tokens: int, overlap_tokens: int) -> list[str]:
-    """Fallback for one paragraph longer than max_tokens: overlapping word windows."""
-    words = text.split()
-    size = max(1, int(max_tokens / _TOKENS_PER_WORD))
-    overlap = min(int(overlap_tokens / _TOKENS_PER_WORD), size - 1)
-    step = size - overlap
-    out = []
-    for start in range(0, len(words), step):
-        out.append(" ".join(words[start:start + size]))
-        if start + size >= len(words):
+def _split_word(word: str, limit: int, count) -> list[str]:
+    """Cut one whitespace-free run (long numbers, minified code) into pieces within limit."""
+    pieces: list[str] = []
+    while word:
+        if count(word) <= limit:
+            pieces.append(word)
             break
+        lo, hi = 1, min(len(word), limit * 16)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if count(word[:mid]) <= limit:
+                lo = mid
+            else:
+                hi = mid - 1
+        pieces.append(word[:lo])
+        word = word[lo:]
+    return pieces
+
+
+def _window(text: str, limit: int, overlap: int, count) -> list[str]:
+    """One paragraph longer than limit: overlapping windows of words (long words are cut)."""
+    pieces = [part for w in text.split() for part in _split_word(w, limit, count)]
+    sizes = [count(p) for p in pieces]
+    out: list[str] = []
+    start = 0
+    while start < len(pieces):
+        end, total = start, 0
+        while end < len(pieces) and total + sizes[end] <= limit:
+            total += sizes[end]
+            end += 1
+        end = max(end, start + 1)
+        # per-piece counts are only approximately additive; verify and trim
+        while end > start + 1 and count(" ".join(pieces[start:end])) > limit:
+            end -= 1
+        out.append(" ".join(pieces[start:end]))
+        if end >= len(pieces):
+            break
+        back, acc = end, 0
+        while back - 1 > start and acc + sizes[back - 1] <= overlap:
+            back -= 1
+            acc += sizes[back]
+        start = back
     return out
 
 
-def _split_long(text: str, max_tokens: int, overlap_tokens: int) -> list[str]:
+def _split_long(text: str, limit: int, overlap: int, count) -> list[str]:
     units: list[str] = []
     for para in _paragraphs(text):
-        if count_tokens(para) > max_tokens:
-            units.extend(_window_words(para, max_tokens, overlap_tokens))
+        if count(para) > limit:
+            units.extend(_window(para, limit, overlap, count))
         else:
             units.append(para)
 
     chunks: list[str] = []
     cur: list[str] = []
     for unit in units:
-        if cur and count_tokens("\n\n".join(cur + [unit])) > max_tokens:
+        if cur and count("\n\n".join(cur + [unit])) > limit:
             chunks.append("\n\n".join(cur))
             carry: list[str] = []
             for prev in reversed(cur):
-                if count_tokens("\n\n".join([prev] + carry)) > overlap_tokens:
+                if count("\n\n".join([prev] + carry)) > overlap:
                     break
                 carry.insert(0, prev)
-            if carry and count_tokens("\n\n".join(carry + [unit])) > max_tokens:
+            if carry and count("\n\n".join(carry + [unit])) > limit:
                 carry = []
             cur = carry
         cur.append(unit)
@@ -223,16 +267,31 @@ def chunk_note(
     max_tokens: int = DEFAULT_MAX_TOKENS,
     overlap_tokens: int = DEFAULT_OVERLAP_TOKENS,
     min_tokens: int = DEFAULT_MIN_TOKENS,
+    count: Callable[[str], int] = count_tokens,
 ) -> list[Chunk]:
+    """Split a note into chunks whose embed_text stays within max_tokens.
+
+    `count` measures text length in tokens; pass the embedding model's real tokenizer
+    (Embedder.count_tokens) to size chunks exactly. max_tokens should leave a little
+    room under the model limit for its special tokens and prefix.
+    """
     fm_tags, body = parse_frontmatter(text)
     tags = _merge_tags(fm_tags, _inline_tags(body))
-    sections = _merge_small(_split_sections(body), max_tokens, min_tokens)
+
+    def limit_for(heading_path: str) -> int:
+        # the tags/heading lines are embedded too, so they use part of the budget;
+        # the floor keeps a pathologically long header from starving the body entirely
+        header = count(_header(tags, heading_path))
+        return max(max_tokens - header, max_tokens // 4)
+
+    sections = _merge_small(_split_sections(body), limit_for, count, min_tokens)
 
     chunks: list[Chunk] = []
     for heading_path, sec_text in sections:
+        limit = limit_for(heading_path)
         pieces = (
-            _split_long(sec_text, max_tokens, overlap_tokens)
-            if count_tokens(sec_text) > max_tokens
+            _split_long(sec_text, limit, overlap_tokens, count)
+            if count(sec_text) > limit
             else [sec_text]
         )
         for piece in pieces:

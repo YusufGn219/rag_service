@@ -105,3 +105,9 @@ def test_rejects_session_without_expected_inputs():
 
     with pytest.raises(ValueError, match="input_ids"):
         Embedder(Bad(), _tokenizer())
+
+
+def test_count_tokens_counts_text_without_specials_or_prefix():
+    emb, _ = _embedder()
+    assert emb.count_tokens("a b c") == 3
+    assert emb.count_tokens("") == 0

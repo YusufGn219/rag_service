@@ -60,6 +60,10 @@ class Embedder:
     def embed_query(self, text: str) -> np.ndarray:
         return self._embed([QUERY_PREFIX + text])[0]
 
+    def count_tokens(self, text: str) -> int:
+        """Token count of text alone (no special tokens, no prefix); pass to chunk_note."""
+        return len(self._tokenizer.encode(text, add_special_tokens=False).ids)
+
     def token_lengths(self, texts: list[str]) -> list[int]:
         """Real token count of each passage as the model would see it, before truncation."""
         encs = self._tokenizer.encode_batch([PASSAGE_PREFIX + t for t in texts])

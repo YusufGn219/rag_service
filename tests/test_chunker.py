@@ -173,3 +173,76 @@ def test_embed_text_contains_tags_heading_and_body():
 def test_embed_text_without_tags_or_heading_is_just_text():
     c = chunk_note("n.md", "sadece duz metin burada")[0]
     assert c.embed_text == c.text
+
+
+# ---- custom (real-tokenizer-style) counter ----
+
+def _kw(**over):
+    kw = dict(max_tokens=200, overlap_tokens=20, min_tokens=20, count=len)
+    kw.update(over)
+    return kw
+
+
+def test_every_embed_text_fits_with_custom_counter():
+    text = (
+        "---\ntags: [alfa, beta, gama, delta]\n---\n"
+        "# Ana Baslik\n## Alt Baslik Uzun Bir Isim\n"
+        + "\n\n".join(_words(30, f"w{i}") for i in range(12))
+        + "\n```\n" + "kod_satiri_uzun " * 40 + "\n```\n"
+        + "9" * 1500
+    )
+    chunks = chunk_note("n.md", text, **_kw())
+    assert len(chunks) > 5
+    assert all(len(c.embed_text) <= 200 for c in chunks)
+
+
+def test_unbroken_run_split_without_loss():
+    run = "x" * 1000
+    chunks = chunk_note("n.md", run, **_kw(overlap_tokens=0))
+    assert len(chunks) >= 5
+    assert all(len(c.text) <= 200 for c in chunks)
+    assert "".join(c.text for c in chunks) == run
+
+
+def test_no_word_dropped_with_custom_counter():
+    words = [f"w{i:03d}" for i in range(300)]
+    text = "# T\n" + "\n\n".join(" ".join(words[i:i + 25]) for i in range(0, 300, 25))
+    chunks = chunk_note("n.md", text, **_kw())
+    seen = set(" ".join(c.text for c in chunks).split())
+    assert set(words) <= seen
+
+
+def test_heavy_header_shrinks_body_budget_but_still_fits():
+    tags = ", ".join(f"etiket{i}" for i in range(10))
+    body = "# Baslik\n" + _words(120, "kelime")
+    with_tags = chunk_note("n.md", f"---\ntags: [{tags}]\n---\n{body}", **_kw())
+    without = chunk_note("n.md", body, **_kw())
+    assert all(len(c.embed_text) <= 200 for c in with_tags)
+    assert len(with_tags) >= len(without)
+
+
+def test_window_overlap_with_custom_counter():
+    words = [f"w{i:03d}" for i in range(200)]
+    chunks = chunk_note("n.md", " ".join(words), **_kw(overlap_tokens=30))
+    assert len(chunks) > 1
+    first_tail = chunks[0].text.split()[-1]
+    assert first_tail in chunks[1].text.split()
+
+
+def test_default_counter_still_estimates_by_words():
+    chunks = chunk_note("n.md", "# A\n" + _words(2000), max_tokens=400)
+    assert all(count_tokens(c.text) <= 400 for c in chunks)
+
+
+def test_overlong_line_starting_with_hashes_is_body_not_heading():
+    text = "## " + " ".join(f"w{i}" for i in range(200))  # whole note flattened onto one line
+    chunks = chunk_note("n.md", text, **_kw(max_tokens=300))
+    assert all(c.heading_path == "" for c in chunks)
+    assert all(len(c.embed_text) <= 300 for c in chunks)
+    assert {f"w{i}" for i in range(200)} <= set(" ".join(c.text for c in chunks).split())
+
+
+def test_normal_long_title_still_a_heading():
+    title = "Bu oldukca uzun ama gercek bir baslik metnidir"
+    chunks = chunk_note("n.md", f"# {title}\n" + _words(80))
+    assert chunks[0].heading_path == title
