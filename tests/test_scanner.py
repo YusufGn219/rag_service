@@ -52,3 +52,33 @@ def test_custom_excludes_replace_defaults(tmp_path):
 
 def test_empty_vault(tmp_path):
     assert _scan(tmp_path) == []
+
+
+def test_exclude_entry_with_slash_is_relative_path(tmp_path):
+    _touch(tmp_path, "Konsey/Medusa/logs/a.md")
+    _touch(tmp_path, "Proje/logs/b.md")
+    names = [p.name for p in _scan(tmp_path, RAG_EXCLUDE_DIRS="Konsey/Medusa/logs")]
+    assert names == ["b.md"]
+
+
+def test_exclude_single_file_by_relative_path(tmp_path):
+    _touch(tmp_path, "Medusa/alarmlar.md")
+    _touch(tmp_path, "Medusa/baska.md")
+    _touch(tmp_path, "Diger/alarmlar.md")
+    found = _scan(tmp_path, RAG_EXCLUDE_DIRS="Medusa/alarmlar.md")
+    assert sorted(p.relative_to(tmp_path.resolve()).as_posix() for p in found) == [
+        "Diger/alarmlar.md",
+        "Medusa/baska.md",
+    ]
+
+
+def test_exclude_bare_name_matches_file_anywhere(tmp_path):
+    _touch(tmp_path, "a/draft.md")
+    _touch(tmp_path, "b/keep.md")
+    assert [p.name for p in _scan(tmp_path, RAG_EXCLUDE_DIRS="draft.md")] == ["keep.md"]
+
+
+def test_exclude_path_tolerates_backslash_and_edge_slashes(tmp_path):
+    _touch(tmp_path, "A/B/x.md")
+    _touch(tmp_path, "keep.md")
+    assert [p.name for p in _scan(tmp_path, RAG_EXCLUDE_DIRS="/A\\B/")] == ["keep.md"]
