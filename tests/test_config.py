@@ -28,3 +28,11 @@ def test_index_inside_vault_rejected(tmp_path):
 def test_custom_excludes(tmp_path):
     cfg = load_config({"RAG_VAULT_ROOT": str(tmp_path), "RAG_EXCLUDE_DIRS": "a, b"})
     assert cfg.exclude_dirs == ("a", "b")
+
+
+def test_model_dir_default_and_override(tmp_path):
+    cfg = load_config({"RAG_VAULT_ROOT": str(tmp_path)})
+    assert cfg.model_dir.parts[-2:] == ("models", "multilingual-e5-small")
+    custom = tmp_path.parent / "mymodel"
+    cfg = load_config({"RAG_VAULT_ROOT": str(tmp_path), "RAG_MODEL_DIR": str(custom)})
+    assert cfg.model_dir == custom.resolve()

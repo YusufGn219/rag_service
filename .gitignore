@@ -5,3 +5,6 @@ __pycache__/
 .env
 data/index/*
 !data/index/.gitkeep
+
+# Downloaded embedding model files (hundreds of MB, never commit)
+data/models/

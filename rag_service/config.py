@@ -16,6 +16,7 @@ class Config:
     vault_root: Path
     index_dir: Path
     exclude_dirs: tuple[str, ...]
+    model_dir: Path
 
 
 def load_config(env=None) -> Config:
@@ -41,4 +42,10 @@ def load_config(env=None) -> Config:
         if raw_ex is not None
         else _DEFAULT_EXCLUDES
     )
-    return Config(vault_root=vault_root, index_dir=index_dir, exclude_dirs=exclude)
+    raw_model = env.get("RAG_MODEL_DIR", "").strip()
+    model_dir = (
+        Path(raw_model).expanduser().resolve()
+        if raw_model
+        else _PROJECT_ROOT / "data" / "models" / "multilingual-e5-small"
+    )
+    return Config(vault_root=vault_root, index_dir=index_dir, exclude_dirs=exclude, model_dir=model_dir)
