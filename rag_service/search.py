@@ -3,6 +3,7 @@
 Try it:  python -m rag_service.search "your question"
 """
 import argparse
+import math
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -24,8 +25,14 @@ DEFAULT_CANDIDATES = 50
 # only decides between notes that already match about equally well.
 DEFAULT_RECENCY_WEIGHT = 0.2
 # A note's score = its best chunk + this share of its next best chunks' scores.
-NOTE_EXTRA_WEIGHT = 0.25
+NOTE_EXTRA_WEIGHT = 0.10
 NOTE_EXTRA_CHUNKS = 2
+# How many of the best fused candidates the reranker reads (it is the slow stage).
+DEFAULT_RERANK_TOP = 40
+
+
+def _sigmoid(x: float) -> float:
+    return 1.0 / (1.0 + math.exp(-max(min(x, 60.0), -60.0)))
 
 
 @dataclass(frozen=True)
@@ -34,6 +41,7 @@ class Hit:
     score: float  # fused (RRF) score; only meaningful for ordering
     dense_score: float | None  # cosine similarity to the query (None in bm25 mode)
     bm25_score: float  # keyword score (0.0 when no query word matched)
+    rerank_score: float | None = None  # reranker's 0-1 score (None if it did not read this chunk)
 
 
 @dataclass(frozen=True)
@@ -66,7 +74,10 @@ class Searcher:
                  rrf_k: int = DEFAULT_RRF_K, today: date | None = None,
                  recency_weight: float = DEFAULT_RECENCY_WEIGHT,
                  half_life_days: float = DEFAULT_HALF_LIFE_DAYS,
-                 resolver: Callable[[str], Path] | None = None):
+                 resolver: Callable[[str], Path] | None = None,
+                 reranker=None, rerank_top: int = DEFAULT_RERANK_TOP):
+        self._reranker = reranker
+        self._rerank_top = rerank_top
         self._data = data
         self._embedder = embedder
         self._candidates = candidates
@@ -86,12 +97,19 @@ class Searcher:
                 f"no usable index at {index_path(cfg)}; run `python -m rag_service.indexer` first"
             )
         kwargs.setdefault("resolver", cfg.resolve_key)
+        if "reranker" not in kwargs:
+            from rag_service.rerank import load_reranker
+
+            kwargs["reranker"] = load_reranker(cfg)
         return cls(data, embedder, **kwargs)
 
-    def _fused(self, query: str, mode: str, recency: bool | None) -> list[Hit]:
-        """Every candidate chunk, best first, with the recency boost applied."""
+    def _fused(self, query: str, mode: str, recency: bool | None, rerank: bool | None) -> list[Hit]:
+        """Every candidate chunk, best first: fused, optionally reranked, recency boost applied."""
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
+        if rerank and self._reranker is None:
+            raise ValueError("rerank=True needs a reranker (pass reranker= to Searcher)")
+        rerank = self._reranker is not None if rerank is None else rerank
         data = self._data
         if not query.strip() or not data.chunks:
             return []
@@ -105,32 +123,51 @@ class Searcher:
         if mode in ("hybrid", "bm25"):
             rankings.append([d for d, _ in data.bm25.search(tokenize(query), self._candidates)])
 
+        scored: list[tuple[int, float]] = rrf(rankings, self._rrf_k)
+        rerank_scores: dict[int, float] = {}
+        if rerank:
+            top = scored[: self._rerank_top]
+            logits = self._reranker.score(query, [data.chunks[d].embed_text for d, _ in top])
+            rerank_scores = {d: _sigmoid(x) for (d, _), x in zip(top, logits)}
+            # reranked chunks go first by the reranker's score; the rest keep their RRF
+            # order below them (scaled to stay under the lowest reranked score)
+            floor = min(rerank_scores.values(), default=1.0)
+            peak = scored[len(top)][1] if len(scored) > len(top) else 1.0
+            scored = [(d, rerank_scores[d]) for d, _ in top] + [
+                (d, 0.5 * floor * s / peak) for d, s in scored[len(top):]
+            ]
+
         use_recency = is_recency_query(query) if recency is None else recency
-        today = self._today or date.today()
-        hits: list[tuple[int, float]] = []
-        for doc, score in rrf(rankings, self._rrf_k):
-            if use_recency:
-                fresh = freshness(self._dates[data.chunks[doc].path], today, self._half_life_days)
-                score *= 1.0 + self._recency_weight * fresh
-            hits.append((doc, score))
         if use_recency:
-            hits.sort(key=lambda ds: (-ds[1], ds[0]))
+            today = self._today or date.today()
+            scored = [
+                (d, s * (1.0 + self._recency_weight
+                         * freshness(self._dates[data.chunks[d].path], today, self._half_life_days)))
+                for d, s in scored
+            ]
+        if use_recency or rerank:
+            scored.sort(key=lambda ds: (-ds[1], ds[0]))
         return [
             Hit(
                 chunk=data.chunks[doc],
                 score=score,
                 dense_score=None if dense_all is None else float(dense_all[doc]),
                 bm25_score=float(bm25_all[doc]),
+                rerank_score=rerank_scores.get(doc),
             )
-            for doc, score in hits
+            for doc, score in scored
         ]
 
     def search(self, query: str, k: int = 5, *, mode: str = "hybrid",
-               max_per_note: int | None = None, recency: bool | None = None) -> list[Hit]:
-        """Best chunks. recency: None = boost newer notes only for 'güncel/son/...' questions."""
+               max_per_note: int | None = None, recency: bool | None = None,
+               rerank: bool | None = None) -> list[Hit]:
+        """Best chunks. recency: None = boost newer notes only for 'güncel/son/...' questions.
+
+        rerank: None = use the reranker if the Searcher has one.
+        """
         hits: list[Hit] = []
         per_note: dict[str, int] = {}
-        for hit in self._fused(query, mode, recency):
+        for hit in self._fused(query, mode, recency, rerank):
             path = hit.chunk.path
             if max_per_note is not None and per_note.get(path, 0) >= max_per_note:
                 continue
@@ -141,10 +178,10 @@ class Searcher:
         return hits
 
     def search_notes(self, query: str, k: int = 5, *, mode: str = "hybrid",
-                     recency: bool | None = None) -> list[NoteHit]:
+                     recency: bool | None = None, rerank: bool | None = None) -> list[NoteHit]:
         """Best notes: chunks of one note are grouped; several good chunks lift the note."""
         by_note: dict[str, list[Hit]] = {}
-        for hit in self._fused(query, mode, recency):
+        for hit in self._fused(query, mode, recency, rerank):
             by_note.setdefault(hit.chunk.path, []).append(hit)  # already best first
         notes = []
         for path, hits in by_note.items():
@@ -182,10 +219,13 @@ def main(argv=None) -> int:
     parser.add_argument("--notes", action="store_true", help="one result per note")
     parser.add_argument("--full", action="store_true",
                         help="print the whole text of the best note (implies --notes)")
+    parser.add_argument("--rerank", choices=("auto", "off"), default="auto",
+                        help="auto = use the reranker when its model is installed")
     parser.add_argument("--recency", choices=("auto", "on", "off"), default="auto",
                         help="boost newer notes: auto = only for 'güncel/son/...' questions")
     args = parser.parse_args(argv)
     recency = {"auto": None, "on": True, "off": False}[args.recency]
+    rerank = False if args.rerank == "off" else None
 
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -202,7 +242,8 @@ def main(argv=None) -> int:
 
     query = " ".join(args.query)
     if args.notes or args.full:
-        notes = searcher.search_notes(query, k=args.k, mode=args.mode, recency=recency)
+        notes = searcher.search_notes(query, k=args.k, mode=args.mode, recency=recency,
+                                      rerank=rerank)
         if not notes:
             print("no results")
         for i, n in enumerate(notes, start=1):
@@ -215,7 +256,7 @@ def main(argv=None) -> int:
         return 0
 
     hits = searcher.search(query, k=args.k, mode=args.mode,
-                           max_per_note=args.max_per_note, recency=recency)
+                           max_per_note=args.max_per_note, recency=recency, rerank=rerank)
     if not hits:
         print("no results")
     for i, h in enumerate(hits, start=1):

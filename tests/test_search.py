@@ -132,7 +132,8 @@ def test_unknown_mode_rejected():
 def test_from_config_loads_saved_index_and_fails_clearly_without_one(tmp_path):
     vault = tmp_path / "v"
     vault.mkdir()
-    cfg = load_config({"RAG_VAULT_ROOT": str(vault), "RAG_INDEX_DIR": str(tmp_path / "idx")})
+    cfg = load_config({"RAG_VAULT_ROOT": str(vault), "RAG_INDEX_DIR": str(tmp_path / "idx"),
+                       "RAG_RERANK_DIR": ""})
     with pytest.raises(FileNotFoundError, match="indexer"):
         Searcher.from_config(cfg, FakeEmbedder())
     chunks = [_chunk("kedi.md", 0, "kedi uyuyor")]
@@ -233,7 +234,8 @@ def test_read_note_returns_file_text_and_refuses_unknown_keys(tmp_path):
     vault.mkdir()
     (vault / "kedi.md").write_text("# Kedi\nuyuyor", encoding="utf-8", newline="\n")
     (tmp_path / "gizli.md").write_text("gizli", encoding="utf-8")
-    cfg = load_config({"RAG_VAULT_ROOT": str(vault), "RAG_INDEX_DIR": str(tmp_path / "idx")})
+    cfg = load_config({"RAG_VAULT_ROOT": str(vault), "RAG_INDEX_DIR": str(tmp_path / "idx"),
+                       "RAG_RERANK_DIR": ""})
     chunks = [_chunk("kedi.md", 0, "kedi uyuyor")]
     save_index(cfg, IndexData(chunks=chunks, vectors=np.stack([ANIMALS]),
                               bm25=index_chunks(chunks), settings={}))
@@ -246,3 +248,69 @@ def test_read_note_returns_file_text_and_refuses_unknown_keys(tmp_path):
 def test_read_note_without_a_vault_resolver_fails_clearly():
     with pytest.raises(RuntimeError, match="vault"):
         _searcher().read_note("kedi.md")
+
+
+# ---- reranking ----
+
+class FakeReranker:
+    """Likes passages containing 'hedef'; records what it was asked to score."""
+
+    def __init__(self):
+        self.calls = []
+
+    def score(self, query, passages):
+        self.calls.append((query, list(passages)))
+        return [5.0 if "hedef" in p else -5.0 for p in passages]
+
+
+def _rerank_searcher(**kw):
+    chunks = [
+        _chunk("a.md", 0, "kedi uyuyor"),  # 0 best by meaning for 'evcil hayvan'
+        _chunk("b.md", 0, "kedi süt içiyor"),  # 1
+        _chunk("c.md", 0, "hedef burada başka konu"),  # 2 meaning-wise far
+        _chunk("d.md", 0, "alakasız"),  # 3
+    ]
+    vectors = np.stack([ANIMALS, ANIMALS * 0.9 + FINANCE * 0.1, VEHICLES, FINANCE])
+    data = IndexData(chunks=chunks, vectors=vectors, bm25=index_chunks(chunks), settings={})
+    rr = FakeReranker()
+    return Searcher(data, FakeEmbedder(), reranker=rr, **kw), rr
+
+
+def test_reranker_reorders_candidates_by_its_own_score():
+    s, _ = _rerank_searcher()
+    plain = s.search("evcil hayvan", k=4, rerank=False)
+    assert plain[0].chunk.path == "a.md"
+    reranked = s.search("evcil hayvan", k=4)
+    assert reranked[0].chunk.path == "c.md"
+    assert reranked[0].rerank_score is not None and plain[0].rerank_score is None
+
+
+def test_reranker_sees_chunk_embed_text_and_only_top_candidates():
+    s, rr = _rerank_searcher(rerank_top=2)
+    s.search("evcil hayvan", k=4)
+    query, passages = rr.calls[0]
+    assert query == "evcil hayvan" and len(passages) == 2
+    assert all(p.startswith("Note: ") for p in passages)  # embed_text, not bare text
+
+
+def test_candidates_beyond_rerank_top_still_returned_after_reranked_ones():
+    s, _ = _rerank_searcher(rerank_top=2)
+    hits = s.search("evcil hayvan", k=4)
+    assert len(hits) == 4
+    assert [h.rerank_score is not None for h in hits] == [True, True, False, False]
+    assert hits[1].score > hits[2].score
+
+
+def test_rerank_can_be_turned_off_per_call_and_requires_a_reranker():
+    s, rr = _rerank_searcher()
+    s.search("evcil hayvan", rerank=False)
+    assert rr.calls == []
+    with pytest.raises(ValueError, match="reranker"):
+        _searcher().search("evcil hayvan", rerank=True)
+    assert _searcher().search("evcil hayvan")  # default without a reranker: just works
+
+
+def test_search_notes_uses_reranked_order_and_recency_still_applies():
+    s, _ = _rerank_searcher()
+    assert s.search_notes("evcil hayvan", k=1)[0].path == "c.md"
+

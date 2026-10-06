@@ -17,6 +17,10 @@ class Config:
     index_dir: Path
     exclude_dirs: tuple[str, ...]
     model_dir: Path
+    # Folder of the reranker model (None = reranking off). rerank_required is True when the
+    # user named the folder: a missing model is then an error, not a silent "off".
+    rerank_dir: Path | None = None
+    rerank_required: bool = False
 
     def note_key(self, path: Path) -> str:
         """Stable id of a note: its path relative to its root ("root-name/..." with several roots)."""
@@ -102,4 +106,11 @@ def load_config(env=None, dotenv_path=None) -> Config:
         if raw_model
         else _PROJECT_ROOT / "data" / "models" / "multilingual-e5-small"
     )
-    return Config(vault_roots=tuple(roots), index_dir=index_dir, exclude_dirs=exclude, model_dir=model_dir)
+    if "RAG_RERANK_DIR" not in env:
+        rerank_dir, rerank_required = _PROJECT_ROOT / "data" / "models" / "reranker", False
+    elif not env["RAG_RERANK_DIR"].strip():
+        rerank_dir, rerank_required = None, False
+    else:
+        rerank_dir, rerank_required = Path(env["RAG_RERANK_DIR"].strip()).expanduser().resolve(), True
+    return Config(vault_roots=tuple(roots), index_dir=index_dir, exclude_dirs=exclude,
+                  model_dir=model_dir, rerank_dir=rerank_dir, rerank_required=rerank_required)

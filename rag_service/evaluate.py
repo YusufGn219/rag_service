@@ -10,6 +10,7 @@ Run it:  python -m rag_service.evaluate
 import argparse
 import json
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -125,6 +126,8 @@ def main(argv=None) -> int:
     parser.add_argument("-k", type=int, default=DEFAULT_K)
     parser.add_argument("--mode", choices=("hybrid", "dense", "bm25"), default="hybrid")
     parser.add_argument("--recency", choices=("auto", "on", "off"), default="auto")
+    parser.add_argument("--rerank", choices=("auto", "off"), default="auto",
+                        help="auto = use the reranker when its model is installed")
     parser.add_argument("--add", metavar="QUESTION", help="append a question to the file and exit")
     parser.add_argument("--expect", nargs="*", default=[], help="with --add: the right note(s)")
     args = parser.parse_args(argv)
@@ -152,7 +155,13 @@ def main(argv=None) -> int:
         return 1
 
     recency = {"auto": None, "on": True, "off": False}[args.recency]
-    print(format_report(run_eval(searcher, questions, k=args.k, mode=args.mode, recency=recency)))
+    started = time.perf_counter()
+    report = run_eval(searcher, questions, k=args.k, mode=args.mode, recency=recency,
+                      rerank=False if args.rerank == "off" else None)
+    elapsed = time.perf_counter() - started
+    print(format_report(report))
+    if report.n:
+        print(f"{elapsed / report.n * 1000:.0f} ms per question")
     return 0
 
 

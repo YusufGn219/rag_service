@@ -142,3 +142,14 @@ def test_note_key_with_several_roots_is_prefixed_by_root_name(tmp_path):
     assert cfg.note_key(p) == "beta/sub/n.md"
     assert cfg.resolve_key("beta/sub/n.md") == p
     assert cfg.resolve_key("alfa/x.md") == a.resolve() / "x.md"
+
+
+def test_rerank_dir_default_override_and_disable(tmp_path):
+    cfg = load_config({"RAG_VAULT_ROOT": str(tmp_path)})
+    assert cfg.rerank_dir.parts[-2:] == ("models", "reranker")
+    assert cfg.rerank_required is False  # default location: used only if the model is there
+    custom = tmp_path / "rr"
+    cfg = load_config({"RAG_VAULT_ROOT": str(tmp_path), "RAG_RERANK_DIR": str(custom)})
+    assert cfg.rerank_dir == custom.resolve() and cfg.rerank_required is True
+    cfg = load_config({"RAG_VAULT_ROOT": str(tmp_path), "RAG_RERANK_DIR": ""})
+    assert cfg.rerank_dir is None  # explicitly empty = reranking off
