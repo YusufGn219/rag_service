@@ -159,7 +159,7 @@ def test_rerank_dir_default_override_and_disable(tmp_path):
 
 def test_service_defaults(tmp_path):
     cfg = load_config({"RAG_VAULT_ROOT": str(tmp_path)})
-    assert (cfg.port, cfg.idle_minutes, cfg.reindex_minutes, cfg.api_key) == (2190, 10, 30, None)
+    assert (cfg.port, cfg.idle_minutes, cfg.reindex_minutes, cfg.api_key) == (2190, 10, 10, None)
 
 
 def test_service_overrides(tmp_path):

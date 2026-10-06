@@ -24,7 +24,7 @@ class Config:
     # Service settings (see service.py / server.py)
     port: int = 2190
     idle_minutes: float = 10  # unload models after this long without a search; 0 = never
-    reindex_minutes: float = 30  # update the index this often; 0 = never
+    reindex_minutes: float = 10  # update the index this often; 0 = never
     api_key: str | None = None  # when set, the HTTP API requires it
 
     def note_key(self, path: Path) -> str:
@@ -135,5 +135,5 @@ def load_config(env=None, dotenv_path=None) -> Config:
                   model_dir=model_dir, rerank_dir=rerank_dir, rerank_required=rerank_required,
                   port=_number(env, "RAG_PORT", 2190, kind=int, low=1, high=65535),
                   idle_minutes=_number(env, "RAG_IDLE_MINUTES", 10),
-                  reindex_minutes=_number(env, "RAG_REINDEX_MINUTES", 30),
+                  reindex_minutes=_number(env, "RAG_REINDEX_MINUTES", 10),
                   api_key=env.get("RAG_API_KEY", "").strip() or None)
