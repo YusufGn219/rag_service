@@ -153,3 +153,27 @@ def test_rerank_dir_default_override_and_disable(tmp_path):
     assert cfg.rerank_dir == custom.resolve() and cfg.rerank_required is True
     cfg = load_config({"RAG_VAULT_ROOT": str(tmp_path), "RAG_RERANK_DIR": ""})
     assert cfg.rerank_dir is None  # explicitly empty = reranking off
+
+
+# ---- service settings ----
+
+def test_service_defaults(tmp_path):
+    cfg = load_config({"RAG_VAULT_ROOT": str(tmp_path)})
+    assert (cfg.port, cfg.idle_minutes, cfg.reindex_minutes, cfg.api_key) == (2190, 10, 30, None)
+
+
+def test_service_overrides(tmp_path):
+    cfg = load_config({"RAG_VAULT_ROOT": str(tmp_path), "RAG_PORT": "3000", "RAG_IDLE_MINUTES": "0",
+                       "RAG_REINDEX_MINUTES": "1.5", "RAG_API_KEY": " secret "})
+    assert (cfg.port, cfg.idle_minutes, cfg.reindex_minutes, cfg.api_key) == (3000, 0, 1.5, "secret")
+
+
+@pytest.mark.parametrize("key,val", [("RAG_PORT", "abc"), ("RAG_PORT", "0"), ("RAG_PORT", "70000"),
+                                     ("RAG_IDLE_MINUTES", "-1"), ("RAG_REINDEX_MINUTES", "x")])
+def test_bad_service_settings_rejected(tmp_path, key, val):
+    with pytest.raises(ConfigError, match=key):
+        load_config({"RAG_VAULT_ROOT": str(tmp_path), key: val})
+
+
+def test_empty_api_key_means_none(tmp_path):
+    assert load_config({"RAG_VAULT_ROOT": str(tmp_path), "RAG_API_KEY": "  "}).api_key is None

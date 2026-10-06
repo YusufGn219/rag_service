@@ -246,3 +246,28 @@ def test_indexes_several_roots_and_updates_only_the_changed_one(tmp_path):
     stats = run_index(cfg, emb)
     assert stats.changed == 1 and all("yepyeni" in t for t in emb.embedded)
     assert load_index(cfg).bm25.search(tokenize("yepyeni"))
+
+
+# ---- index lock ----
+
+def test_run_index_refuses_while_locked(tmp_path):
+    from rag_service.lock import IndexLocked, index_lock
+
+    vault, cfg = _setup(tmp_path)
+    (vault / "a.md").write_text("# A\n\nsome text here", encoding="utf-8")
+    with index_lock(cfg):
+        with pytest.raises(IndexLocked):
+            run_index(cfg, FakeEmbedder())
+    assert load_index(cfg) is None
+
+
+def test_run_index_releases_lock_after_failure(tmp_path):
+    from rag_service.lock import lock_path
+
+    vault, cfg = _setup(tmp_path)
+    (vault / "a.md").write_text("# A\n\nsome text here", encoding="utf-8")
+    emb = FakeEmbedder()
+    emb.fail = True
+    with pytest.raises(RuntimeError):
+        run_index(cfg, emb)
+    assert not lock_path(cfg).exists()

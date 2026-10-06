@@ -17,6 +17,7 @@ from rag_service.chunker import (
 )
 from rag_service.config import Config, ConfigError, load_config
 from rag_service.embeddings import MODEL_REPO
+from rag_service.lock import index_lock
 from rag_service.manifest import compute_changes, load_manifest, save_manifest, snapshot
 from rag_service.scanner import scan_notes
 from rag_service.store import IndexData, load_index, save_index
@@ -50,8 +51,13 @@ def run_index(
 
     Order matters for crash safety: embed first, then write the index, and the manifest
     last. If anything fails before the manifest is written, the next run simply redoes
-    the same notes.
+    the same notes. Only one run at a time: a second one raises IndexLocked.
     """
+    with index_lock(cfg):
+        return _run_index(cfg, embedder, model_id, max_tokens, overlap_tokens, min_tokens, progress)
+
+
+def _run_index(cfg, embedder, model_id, max_tokens, overlap_tokens, min_tokens, progress) -> IndexStats:
     started = time.monotonic()
     settings = {
         "format": FORMAT_VERSION,

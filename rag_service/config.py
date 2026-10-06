@@ -21,6 +21,11 @@ class Config:
     # user named the folder: a missing model is then an error, not a silent "off".
     rerank_dir: Path | None = None
     rerank_required: bool = False
+    # Service settings (see service.py / server.py)
+    port: int = 2190
+    idle_minutes: float = 10  # unload models after this long without a search; 0 = never
+    reindex_minutes: float = 30  # update the index this often; 0 = never
+    api_key: str | None = None  # when set, the HTTP API requires it
 
     def note_key(self, path: Path) -> str:
         """Stable id of a note: its path relative to its root ("root-name/..." with several roots)."""
@@ -59,6 +64,20 @@ def _read_dotenv(path) -> dict[str, str]:
         if key:
             values[key] = val
     return values
+
+
+def _number(env, key: str, default, *, kind=float, low=0, high=None):
+    raw = env.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        value = kind(raw)
+    except ValueError:
+        raise ConfigError(f"{key} must be a number, got {raw!r}") from None
+    if value < low or (high is not None and value > high):
+        bound = f"between {low} and {high}" if high is not None else f"at least {low}"
+        raise ConfigError(f"{key} must be {bound}, got {raw!r}")
+    return value
 
 
 def load_config(env=None, dotenv_path=None) -> Config:
@@ -113,4 +132,8 @@ def load_config(env=None, dotenv_path=None) -> Config:
     else:
         rerank_dir, rerank_required = Path(env["RAG_RERANK_DIR"].strip()).expanduser().resolve(), True
     return Config(vault_roots=tuple(roots), index_dir=index_dir, exclude_dirs=exclude,
-                  model_dir=model_dir, rerank_dir=rerank_dir, rerank_required=rerank_required)
+                  model_dir=model_dir, rerank_dir=rerank_dir, rerank_required=rerank_required,
+                  port=_number(env, "RAG_PORT", 2190, kind=int, low=1, high=65535),
+                  idle_minutes=_number(env, "RAG_IDLE_MINUTES", 10),
+                  reindex_minutes=_number(env, "RAG_REINDEX_MINUTES", 30),
+                  api_key=env.get("RAG_API_KEY", "").strip() or None)
