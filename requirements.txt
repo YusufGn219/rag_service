@@ -2,3 +2,6 @@
 onnxruntime
 tokenizers
 huggingface_hub
+
+fastapi
+uvicorn
