@@ -3,6 +3,7 @@
 Listens on 127.0.0.1 only. Port priority: --port, then RAG_PORT, then 2190.
 """
 import argparse
+import os
 import sys
 import threading
 
@@ -24,6 +25,25 @@ def pick_port(args, cfg: Config) -> int:
     if not 1 <= args.port <= 65535:
         raise ConfigError(f"--port must be between 1 and 65535, got {args.port}")
     return args.port
+
+
+def disable_power_throttling() -> None:
+    """Windows 11 slows background/hidden processes down ("efficiency mode", about 5x here).
+    The service is started hidden, so opt out of that throttling. Does nothing elsewhere."""
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    class State(ctypes.Structure):
+        _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG),
+                    ("StateMask", wintypes.ULONG)]
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.GetCurrentProcess.restype = wintypes.HANDLE
+    k32.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    state = State(1, 0x1, 0)  # version 1; control EXECUTION_SPEED; state 0 = throttling off
+    k32.SetProcessInformation(k32.GetCurrentProcess(), 4, ctypes.byref(state), ctypes.sizeof(state))
 
 
 class MaintenanceThread(threading.Thread):
@@ -58,6 +78,7 @@ def main(argv=None) -> int:
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    disable_power_throttling()
     service = SearchService(cfg)
     maintenance = MaintenanceThread(service)
     maintenance.start()

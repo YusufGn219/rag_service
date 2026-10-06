@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 
 from rag_service.config import Config
+from rag_service.errors import Busy, NoIndex, ServiceError
 from rag_service.indexer import run_index
 from rag_service.lock import IndexLocked, lock_held
 from rag_service.manifest import load_manifest
@@ -18,18 +19,6 @@ from rag_service.store import index_path
 SNIPPET_CHARS = 600
 EXTRA_CHUNKS = 2
 MAX_RESULTS = 20
-
-
-class ServiceError(RuntimeError):
-    """A problem the caller can understand and act on (the message says how)."""
-
-
-class Busy(ServiceError):
-    """The index is being updated by another run right now."""
-
-
-class NoIndex(ServiceError):
-    """There is no index yet."""
 
 
 def _default_embedder(cfg: Config):

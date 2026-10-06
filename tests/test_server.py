@@ -66,3 +66,9 @@ def test_maintenance_thread_survives_errors():
 
 def test_maintenance_thread_is_daemon():
     assert MaintenanceThread(FakeService(), interval=1).daemon is True
+
+
+def test_disable_power_throttling_does_not_raise():
+    from rag_service.server import disable_power_throttling
+
+    disable_power_throttling()

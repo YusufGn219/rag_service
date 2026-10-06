@@ -19,7 +19,7 @@ _STILL_ACTIVE = 259
 
 
 class IndexLocked(RuntimeError):
-    """Another live process is updating the index."""
+    """Another live process holds the lock (e.g. is updating the index)."""
 
 
 def lock_path(cfg: Config):
@@ -88,11 +88,15 @@ def lock_held(cfg: Config) -> bool:
     return path.exists() and not _is_stale(path)
 
 
-@contextlib.contextmanager
 def index_lock(cfg: Config):
     """Hold the index lock for the duration of the block; raise IndexLocked if someone else has it."""
-    cfg.index_dir.mkdir(parents=True, exist_ok=True)
-    path = lock_path(cfg)
+    return file_lock(lock_path(cfg))
+
+
+@contextlib.contextmanager
+def file_lock(path):
+    """Hold a pid lock file for the duration of the block; raise IndexLocked if a live process has it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps({"pid": os.getpid(), "time": datetime.now(timezone.utc).isoformat()})
     for _ in range(3):
         try:
@@ -101,7 +105,7 @@ def index_lock(cfg: Config):
             seen = _read_owner(path)
             if not _is_stale(path):
                 owner = f"pid {seen[0]}" if seen[0] else "another process"
-                raise IndexLocked(f"the index is being updated by {owner} ({path})") from None
+                raise IndexLocked(f"{path} is held by {owner}") from None
             if _read_owner(path) == seen:  # unchanged since we judged it stale: remove it
                 with contextlib.suppress(OSError):
                     path.unlink()
@@ -110,7 +114,7 @@ def index_lock(cfg: Config):
             f.write(body)
         break
     else:
-        raise IndexLocked(f"could not take the index lock ({path})")
+        raise IndexLocked(f"could not take the lock {path}")
     try:
         yield
     finally:
