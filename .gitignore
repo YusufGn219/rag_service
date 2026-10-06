@@ -11,3 +11,6 @@ data/models/
 
 # Personal evaluation questions (note names are private)
 data/eval/
+
+# Audit reports and decisions (note paths are private)
+data/audit_*
