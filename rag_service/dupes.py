@@ -60,7 +60,7 @@ def _fold(text: str) -> str:
     return text.translate(_FOLD).lower()
 
 
-def _words(text: str) -> list[str]:
+def words_of(text: str) -> list[str]:
     return _WORD.findall(_fold(text))
 
 
@@ -130,9 +130,9 @@ def find_duplicates(data: IndexData, manifest: Snapshot, *, threshold: float = D
         chunk_count[c.path] = chunk_count.get(c.path, 0) + 1
     paths = sorted(texts)
     raw = {p: "\n".join(texts[p]) for p in paths}
-    words = {p: _words(raw[p]) for p in paths}
+    words = {p: words_of(raw[p]) for p in paths}
 
-    inbound = _inbound_links(paths, raw)
+    inbound, _ = link_counts(paths, raw)
     analysed = [p for p in paths if len(words[p]) >= min_words]
     shingles = {p: _shingles(words[p]) for p in analysed}
     full_hash = {p: hashlib.sha1(" ".join(words[p]).encode("utf-8")).digest() for p in analysed}
@@ -195,20 +195,24 @@ def find_duplicates(data: IndexData, manifest: Snapshot, *, threshold: float = D
     return groups
 
 
-def _inbound_links(paths: list[str], raw: dict[str, str]) -> dict[str, int]:
+def link_counts(paths: list[str], raw: dict[str, str]) -> tuple[dict[str, int], dict[str, int]]:
+    """(inbound, outbound) per note: how many other notes link to it, and how many [[links]] it has."""
     by_title: dict[str, list[str]] = {}
     for p in paths:
         by_title.setdefault(_fold(_stem(p)), []).append(p)
     linkers: dict[str, set[str]] = {p: set() for p in paths}
+    outbound: dict[str, int] = {}
     for source in paths:
-        for target in _LINK.findall(raw[source]):
+        targets = _LINK.findall(raw[source])
+        outbound[source] = len(targets)
+        for target in targets:
             name = target.strip().replace("\\", "/").rsplit("/", 1)[-1]
             if name.lower().endswith(".md"):
                 name = name[:-3]
             for dest in by_title.get(_fold(name.strip()), ()):
                 if dest != source:
                     linkers[dest].add(source)
-    return {p: len(s) for p, s in linkers.items()}
+    return {p: len(v) for p, v in linkers.items()}, outbound
 
 
 def _covered(path: str, others: list[str], shingles: dict[str, np.ndarray]) -> float:
@@ -221,7 +225,7 @@ def _covered(path: str, others: list[str], shingles: dict[str, np.ndarray]) -> f
     return float(np.isin(mine, np.concatenate(parts)).mean())
 
 
-def _hints(path: str) -> tuple[str, ...]:
+def path_hints(path: str) -> tuple[str, ...]:
     return tuple(sorted(set(_WORD.findall(_fold(path))) & _HINTS))
 
 
@@ -233,7 +237,7 @@ def _build(kind, detail, members, shingles, words, chunk_count, manifest, inboun
         infos.append(NoteInfo(
             path=p, chunks=chunk_count[p], words=len(words[p]),
             modified=datetime.fromtimestamp(ns / 1e9).date() if ns else None,
-            inbound=inbound.get(p, 0), hints=_hints(p),
+            inbound=inbound.get(p, 0), hints=path_hints(p),
             covered=_covered(p, [o for o in members if o != p], shingles),
         ))
     excluded: list[str] = []
