@@ -24,6 +24,7 @@ class Stub:
 
     def __init__(self, port, key=None):
         self.port, self.key, self.seen, self._server = port, key, [], None
+        self.health = {"loaded": False, "version": "test", "pid": 4242, "reindexing": False}
 
     def start(self):
         stub = self
@@ -46,7 +47,7 @@ class Stub:
                     return self._reply(401, {"detail": "missing or wrong API key"})
                 url = urlparse(self.path)
                 if url.path == "/health":
-                    return self._reply(200, {"loaded": False})
+                    return self._reply(200, stub.health)
                 if url.path == "/search":
                     code = {"noindex": 503, "busy": 409}.get(body["query"], 200)
                     if code != 200:
@@ -102,9 +103,15 @@ def env(tmp_path):
         s.stop()
 
 
+def _no_stop(pid):
+    pytest.fail(f"the running service must not be stopped (pid {pid})")
+
+
 def _client(cfg, spawn, **kw):
     kw.setdefault("start_timeout", 2.0)
     kw.setdefault("poll_interval", 0.01)
+    kw.setdefault("version", lambda: "test")  # the stub reports "test", so nothing is outdated
+    kw.setdefault("stop", _no_stop)
     return ServiceClient(cfg, spawn=spawn, **kw)
 
 
@@ -211,6 +218,115 @@ def test_turkish_text_survives_the_round_trip(env):
     stub.start()
     _client(cfg, None).search("güncel durum ışık")
     assert stub.seen[-1][3]["query"] == "güncel durum ışık"
+
+
+# ---- a service running old code is replaced ----
+
+def test_a_service_with_the_current_version_is_left_alone(env):
+    cfg, stub = env()
+    stub.health["version"] = "v1"
+    stub.start()
+    spawned = []
+    c = _client(cfg, lambda cfg: spawned.append(1), version=lambda: "v1")
+    assert c.search("kedi")[0]["query"] == "kedi"
+    assert spawned == []
+
+
+def _replaceable(env, *, old_version="v1", new_version="v2", **health):
+    """A running stub with old code, plus the stop / spawn callables that swap it for a new one."""
+    cfg, stub = env()
+    stub.health.update(version=old_version, **health)
+    if old_version is None:
+        del stub.health["version"]
+    stub.start()
+    events = []
+
+    def stop(pid):
+        events.append(("stop", pid))
+        stub.stop()
+
+    def spawn(cfg):
+        events.append("spawn")
+        stub.health["version"] = new_version
+        stub.start()
+        return Proc()
+
+    return cfg, stub, events, stop, spawn
+
+
+def test_a_service_running_old_code_is_stopped_and_started_again(env):
+    cfg, stub, events, stop, spawn = _replaceable(env)
+    c = _client(cfg, spawn, version=lambda: "v2", stop=stop)
+    assert c.search("kedi")[0]["query"] == "kedi"
+    assert events == [("stop", 4242), "spawn"]
+    assert stub.health["version"] == "v2"
+
+
+def test_the_version_is_checked_on_every_call_but_the_new_service_is_not_restarted_again(env):
+    cfg, stub, events, stop, spawn = _replaceable(env)
+    c = _client(cfg, spawn, version=lambda: "v2", stop=stop)
+    c.search("kedi")
+    c.search("araba")
+    c.read_note("a.md")
+    assert events == [("stop", 4242), "spawn"]
+
+
+def test_a_service_that_reports_no_version_counts_as_old(env):
+    cfg, stub, events, stop, spawn = _replaceable(env, old_version=None)
+    assert _client(cfg, spawn, version=lambda: "v2", stop=stop).search("kedi")
+    assert events == [("stop", 4242), "spawn"]
+
+
+def test_a_service_that_is_updating_the_index_is_not_interrupted(env):
+    cfg, stub, events, stop, spawn = _replaceable(env, reindexing=True)
+    c = _client(cfg, spawn, version=lambda: "v2", stop=stop)
+    assert c.search("kedi")[0]["query"] == "kedi"
+    assert events == []
+
+
+def test_if_the_old_service_cannot_be_stopped_it_is_still_used(env):
+    cfg, stub, events, _, spawn = _replaceable(env)
+
+    def stop(pid):
+        raise OSError("access denied")
+
+    assert _client(cfg, spawn, version=lambda: "v2", stop=stop).search("kedi")
+    assert events == []
+
+
+def test_a_service_without_a_pid_is_not_stopped(env):
+    cfg, stub, events, stop, spawn = _replaceable(env)
+    del stub.health["pid"]
+    assert _client(cfg, spawn, version=lambda: "v2", stop=stop).search("kedi")
+    assert events == []
+
+
+def test_a_wrong_api_key_never_triggers_a_restart(env):
+    cfg, stub, events, stop, spawn = _replaceable(env)
+    stub.key = "other"
+    with pytest.raises(ServiceError, match="API key"):
+        _client(cfg, spawn, version=lambda: "v2", stop=stop).search("kedi")
+    assert events == []
+
+
+def test_a_service_that_does_not_go_away_is_still_used(env):
+    cfg, stub, events, _, spawn = _replaceable(env)
+    c = _client(cfg, spawn, version=lambda: "v2", stop=lambda pid: events.append(("stop", pid)),
+                start_timeout=0.2)
+    assert c.search("kedi")  # stop "worked" but the port stays open: keep using the old one
+    assert events == [("stop", 4242)]
+
+
+def test_stop_process_ends_a_running_process_and_accepts_one_that_is_gone():
+    import subprocess
+    import sys
+
+    from rag_service.client import stop_process
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    stop_process(proc.pid)
+    assert proc.wait(timeout=10) != 0
+    stop_process(proc.pid)  # already gone: no error
 
 
 def test_pid_proxy_reports_alive_and_dead():

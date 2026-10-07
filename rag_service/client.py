@@ -5,6 +5,7 @@ session. Callers: bridge.py (and, later, anything else that wants the service up
 """
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from pathlib import Path
 from rag_service.config import Config
 from rag_service.errors import Busy, NoIndex, ServiceError, ServiceUnavailable
 from rag_service.lock import IndexLocked, file_lock, pid_alive
+from rag_service.version import code_version
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _LOG_TAIL_CHARS = 400
@@ -81,6 +83,21 @@ def spawn_server(cfg: Config):
             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
 
 
+def stop_process(pid: int) -> None:
+    """Stop a process and the processes it started. A process that is already gone counts as
+    stopped; raises OSError if it is still there and could not be stopped."""
+    if os.name == "nt":
+        result = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
+                                creationflags=subprocess.CREATE_NO_WINDOW)
+        if result.returncode != 0 and pid_alive(pid):
+            raise OSError(f"could not stop process {pid}")
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+
 class _Down(Exception):
     """Nothing is listening (connection refused, timeout)."""
 
@@ -88,9 +105,11 @@ class _Down(Exception):
 class ServiceClient:
     def __init__(self, cfg: Config, *, spawn=spawn_server, start_timeout: float = 90.0,
                  poll_interval: float = 0.25, request_timeout: float = 300.0,
-                 sleep=time.sleep, clock=time.monotonic):
+                 sleep=time.sleep, clock=time.monotonic, version=code_version, stop=stop_process):
         self._cfg = cfg
         self._spawn = spawn
+        self._version = version  # the version of the code on disk right now
+        self._stop = stop
         self._start_timeout = start_timeout
         self._poll = poll_interval
         self._request_timeout = request_timeout
@@ -121,18 +140,43 @@ class ServiceClient:
         except OSError:
             return False
 
-    def healthy(self) -> bool:
+    def _health(self) -> dict | None:
+        """The service's /health answer; {} when it is up but gave none (e.g. wrong API key);
+        None when it is not running."""
         if not self._port_open():
-            return False
+            return None
         try:
-            self._request("GET", "/health", timeout=5.0)
+            info = self._request("GET", "/health", timeout=5.0)
         except _Down:
-            return False
+            return None
         except ServiceError:
-            return True  # it answered (e.g. 401): it is up, the real call will explain
-        return True
+            return {}  # it answered (e.g. 401): it is up, the real call will explain
+        return info if isinstance(info, dict) else {}
+
+    def healthy(self) -> bool:
+        return self._health() is not None
+
+    def _stop_if_outdated(self, info: dict) -> None:
+        """A service started from older code than what is on disk now is stopped, so that the
+        start below brings up the current code. Best effort: if it cannot be stopped (or is
+        busy updating the index) it is simply used as it is."""
+        if not info or info.get("version") == self._version():
+            return
+        pid = info.get("pid")
+        if info.get("reindexing") or not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
+            return
+        try:
+            self._stop(pid)
+        except OSError:
+            return
+        deadline = self._clock() + min(self._start_timeout, 10.0)
+        while self._port_open() and self._clock() < deadline:
+            self._sleep(self._poll)
 
     def ensure_running(self) -> None:
+        info = self._health()
+        if info:
+            self._stop_if_outdated(info)
         if self.healthy():
             return
         deadline = self._clock() + self._start_timeout

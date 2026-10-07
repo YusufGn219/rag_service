@@ -1,11 +1,13 @@
 """HTTP API over SearchService (FastAPI). Start it with `python -m rag_service.server`."""
 import hmac
+import os
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from rag_service.config import Config
 from rag_service.service import MAX_RESULTS, Busy, NoIndex, SearchService, ServiceError
+from rag_service.version import code_version
 
 
 class SearchRequest(BaseModel):
@@ -50,9 +52,11 @@ def create_app(service: SearchService, cfg: Config) -> FastAPI:
     def note(path: str = Query(..., min_length=1)):
         return {"path": path, "text": service.read_note(path)}
 
+    version = code_version()  # of the code this service started with
+
     @app.get("/health")
     def health():
-        return service.status()
+        return {**service.status(), "version": version, "pid": os.getpid()}
 
     @app.post("/reindex")
     def reindex():

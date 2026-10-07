@@ -59,6 +59,16 @@ def test_health(tmp_path):
     assert r.json()["index_present"] is True and r.json()["loaded"] is False
 
 
+def test_health_names_the_code_version_and_the_process(tmp_path):
+    import os
+
+    from rag_service.version import code_version
+
+    body = _client(tmp_path)[0].get("/health").json()
+    assert body["version"] == code_version()
+    assert body["pid"] == os.getpid()
+
+
 def test_reindex(tmp_path):
     c, _, _, vault = _client(tmp_path)
     (vault / "yeni.md").write_text("# Yeni\n\nbalık tutmak güzel\n", encoding="utf-8")
