@@ -2,7 +2,14 @@ from datetime import date
 
 import pytest
 
-from rag_service.recency import freshness, is_recency_query, note_date
+from rag_service.recency import (
+    folder_units,
+    freshness,
+    is_recency_query,
+    is_state_query,
+    is_status_note,
+    note_date,
+)
 
 
 # ---- note_date ----
@@ -52,6 +59,73 @@ def test_recency_queries_detected(q):
 ])
 def test_ordinary_queries_not_flagged(q):
     assert not is_recency_query(q)
+
+
+# ---- is_state_query ("where are we") ----
+
+@pytest.mark.parametrize("q", [
+    "Tryess projesinde neredeyiz",
+    "neredeyim ben",
+    "Creative arv projesinde güncel durumumuz nedir",
+    "vitapuls projesinin güncel durumu",
+    "Tryess için son durum nedir",
+    "Tryess'te şu an hangi işler bekliyor",
+    "Chef.LLM'de en son ne yaptık",
+    "Aegis'te en son hangi değişikliği yaptık",
+    "EN SON NELER OLDU",
+])
+def test_state_queries_detected(q):
+    assert is_state_query(q)
+
+
+@pytest.mark.parametrize("q", [
+    "Son olarak, videoda hep siyah kare çıkıyordu",
+    "En son, videoda hep siyah kare çıkıyordu",  # "en son" only counts before a question word
+    "Güncel Docker sürümü nedir",  # "güncel" alone is a specific question too
+    "yeni eklenen özellikler neydi",
+    "yapılması bekleyen acil işlerimiz",
+    "durumu özetle",  # "durum" needs a recency word with it
+    "Docker konteyner durumu nasıl kontrol edilir",
+    "en son",
+    "sonuç bölümü",
+    "",
+])
+def test_specific_or_plain_queries_are_not_state_queries(q):
+    assert not is_state_query(q)
+
+
+def test_a_state_query_is_always_a_recency_query_except_durum_without_a_recency_word():
+    for q in ["Tryess projesinde neredeyiz", "güncel durum", "en son ne yaptık", "şu an ne durumda"]:
+        assert is_state_query(q) and is_recency_query(q)
+
+
+# ---- is_status_note / folder_units ----
+
+@pytest.mark.parametrize("path", [
+    "Claude_Code/ar-kiyafet/ar-kiyafet - İndeks.md",
+    "Claude_Code/x/Proje Index.md",
+    "Claude_Code/ar-kiyafet/37 Devam Adımları ve Ertelenenler (2026-10-04).md",
+    "Claude_Code/creative-arv/04 Güncel Durum ve Devam Notu (2026-07-15).md",
+    "a/Güncel Durum.md",
+])
+def test_status_notes(path):
+    assert is_status_note(path)
+
+
+@pytest.mark.parametrize("path", [
+    "Claude_Code/ar-kiyafet/03 Backend Yeniden Yapılanma Planı.md",
+    "a/Durum Raporu.md",  # "durum" alone is not enough
+    "a/indeks_klasoru/not.md",  # only the file name counts
+    "a/Güncel Sürümler.md",
+])
+def test_ordinary_notes_are_not_status_notes(path):
+    assert not is_status_note(path)
+
+
+def test_folder_units_are_the_lowercased_folders_without_the_file_name():
+    assert folder_units("Claude_Code/Ar-Kiyafet/37 Not.md") == frozenset({"claude_code", "ar-kiyafet"})
+    assert folder_units("a\\B\\not.md") == frozenset({"a", "b"})
+    assert folder_units("not.md") == frozenset()
 
 
 # ---- freshness ----

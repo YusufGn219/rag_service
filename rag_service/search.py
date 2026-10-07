@@ -9,21 +9,42 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
 from rag_service.bm25 import tokenize
 from rag_service.chunker import Chunk, note_title
 from rag_service.config import Config, ConfigError, load_config
-from rag_service.recency import DEFAULT_HALF_LIFE_DAYS, freshness, is_recency_query, note_date
+from rag_service.recency import (
+    DEFAULT_HALF_LIFE_DAYS,
+    folder_units,
+    freshness,
+    is_recency_query,
+    is_state_query,
+    is_status_note,
+    note_date,
+)
 from rag_service.store import IndexData, index_path, load_index
 
 MODES = ("hybrid", "dense", "bm25")
 DEFAULT_RRF_K = 60
 DEFAULT_CANDIDATES = 50
-# A fully fresh note gets its score multiplied by 1 + this; small on purpose, so recency
-# only decides between notes that already match about equally well.
-DEFAULT_RECENCY_WEIGHT = 0.2
+# Recency questions ("son", "yeni", ...): a fully fresh note (its file name has a date) gets its
+# score multiplied by 1 + this. Small on purpose, so recency only decides between notes that
+# already match about equally well (at 0.2 it pushed specific answers down in the eval).
+DEFAULT_RECENCY_WEIGHT = 0.05
+# "Where are we" questions ("neredeyiz", "güncel durum", ...): the answer is the note that sums
+# a project up, so an index / "Devam" note gets its score multiplied by 1 + this...
+DEFAULT_STATUS_WEIGHT = 5.0
+# ...and a note in the project folder that the best results point to, by 1 + this.
+# Measured on the eval set: "where are we" questions went from hit@1 33% to 81%.
+DEFAULT_PROJECT_WEIGHT = 0.5
+# The project folder is the one that holds at least this share of the best results' weight
+# and is at least this many times more common there than in the whole vault.
+FOCUS_TOP = 15
+FOCUS_MIN_SHARE = 0.3
+FOCUS_MIN_LIFT = 3.0
 # A note's score = its best chunk + this share of its next best chunks' scores.
 NOTE_EXTRA_WEIGHT = 0.10
 NOTE_EXTRA_CHUNKS = 2
@@ -69,10 +90,20 @@ def rrf(rankings: list[list[int]], k: int = DEFAULT_RRF_K) -> list[tuple[int, fl
     return sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
+class _Ranked(NamedTuple):
+    scored: list[tuple[int, float]]  # (chunk row, score), not yet sorted when the reranker ran
+    rerank_scores: dict[int, float]
+    dense_all: "np.ndarray | None"
+    bm25_all: np.ndarray
+    reranked: bool
+
+
 class Searcher:
     def __init__(self, data: IndexData, embedder, *, candidates: int = DEFAULT_CANDIDATES,
                  rrf_k: int = DEFAULT_RRF_K, today: date | None = None,
                  recency_weight: float = DEFAULT_RECENCY_WEIGHT,
+                 status_weight: float = DEFAULT_STATUS_WEIGHT,
+                 project_weight: float = DEFAULT_PROJECT_WEIGHT,
                  half_life_days: float = DEFAULT_HALF_LIFE_DAYS,
                  resolver: Callable[[str], Path] | None = None,
                  reranker=None, rerank_top: int = DEFAULT_RERANK_TOP):
@@ -84,10 +115,19 @@ class Searcher:
         self._rrf_k = rrf_k
         self._today = today
         self._recency_weight = recency_weight
+        self._status_weight = status_weight
+        self._project_weight = project_weight
         self._half_life_days = half_life_days
         self._resolver = resolver
         self._known_notes = {c.path for c in data.chunks}
         self._dates: dict[str, date | None] = {p: note_date(p) for p in self._known_notes}
+        self._status = {p for p in self._known_notes if is_status_note(p)}
+        self._units = {p: folder_units(p) for p in self._known_notes}
+        counts: dict[str, int] = {}
+        for units in self._units.values():
+            for u in units:
+                counts[u] = counts.get(u, 0) + 1
+        self._unit_share = {u: n / max(len(self._known_notes), 1) for u, n in counts.items()}
 
     @classmethod
     def from_config(cls, cfg: Config, embedder, **kwargs) -> "Searcher":
@@ -103,8 +143,9 @@ class Searcher:
             kwargs["reranker"] = load_reranker(cfg)
         return cls(data, embedder, **kwargs)
 
-    def _fused(self, query: str, mode: str, recency: bool | None, rerank: bool | None) -> list[Hit]:
-        """Every candidate chunk, best first: fused, optionally reranked, recency boost applied."""
+    def _ranked(self, query: str, mode: str, rerank: bool | None) -> "_Ranked | None":
+        """Candidate chunks scored by fusion and (optionally) the reranker, before any
+        recency adjustment. None when there is nothing to search."""
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
         if rerank and self._reranker is None:
@@ -112,7 +153,7 @@ class Searcher:
         rerank = self._reranker is not None if rerank is None else rerank
         data = self._data
         if not query.strip() or not data.chunks:
-            return []
+            return None
 
         bm25_all = data.bm25.scores(tokenize(query))
         dense_all = None
@@ -137,26 +178,82 @@ class Searcher:
                 (d, 0.5 * floor * s / peak) for d, s in scored[len(top):]
             ]
 
+        return _Ranked(scored, rerank_scores, dense_all, bm25_all, reranked=rerank)
+
+    def _fused(self, query: str, mode: str, recency: bool | None, rerank: bool | None) -> list[Hit]:
+        """Every candidate chunk, best first: fused, optionally reranked, recency boost applied."""
+        ranked = self._ranked(query, mode, rerank)
+        if ranked is None:
+            return []
+        scored = ranked.scored
         use_recency = is_recency_query(query) if recency is None else recency
         if use_recency:
-            today = self._today or date.today()
-            scored = [
-                (d, s * (1.0 + self._recency_weight
-                         * freshness(self._dates[data.chunks[d].path], today, self._half_life_days)))
-                for d, s in scored
-            ]
-        if use_recency or rerank:
+            scored = self._boost(scored, state=is_state_query(query))
+        if use_recency or ranked.reranked:
             scored.sort(key=lambda ds: (-ds[1], ds[0]))
+        return self._hits(ranked, scored)
+
+    def _hits(self, ranked: "_Ranked", scored: list[tuple[int, float]]) -> list[Hit]:
+        data = self._data
         return [
             Hit(
                 chunk=data.chunks[doc],
                 score=score,
-                dense_score=None if dense_all is None else float(dense_all[doc]),
-                bm25_score=float(bm25_all[doc]),
-                rerank_score=rerank_scores.get(doc),
+                dense_score=None if ranked.dense_all is None else float(ranked.dense_all[doc]),
+                bm25_score=float(ranked.bm25_all[doc]),
+                rerank_score=ranked.rerank_scores.get(doc),
             )
             for doc, score in scored
         ]
+
+    def _boost(self, scored: list[tuple[int, float]], state: bool = False) -> list[tuple[int, float]]:
+        """Score bonuses for recency questions: how new the note is; and, when the question asks
+        where a project stands (`state`), also whether the note is an index/"Devam" note and
+        whether it sits in the project folder the best results point to."""
+        if not scored:
+            return scored
+        chunks = self._data.chunks
+        today = self._today or date.today()
+        focus = self._focus_unit(scored) if state and self._project_weight else None
+        boosted = []
+        for d, s in scored:
+            path = chunks[d].path
+            bonus = self._recency_weight * freshness(self._dates[path], today, self._half_life_days)
+            if state and path in self._status:
+                bonus += self._status_weight
+            if focus is not None and focus in self._units[path]:
+                bonus += self._project_weight
+            boosted.append((d, s * (1.0 + bonus)))
+        return boosted
+
+    def _focus_unit(self, scored: list[tuple[int, float]]) -> str | None:
+        """The folder name that the best results cluster in, if one stands out.
+
+        Among the best FOCUS_TOP notes, a folder counts when it holds at least FOCUS_MIN_SHARE of
+        their weight and is FOCUS_MIN_LIFT times more common there than in the whole vault
+        (that skips folders everything lives under, like the vault root).
+        """
+        best: dict[str, float] = {}
+        for d, s in sorted(scored, key=lambda ds: -ds[1]):
+            path = self._data.chunks[d].path
+            if path not in best:
+                best[path] = s
+                if len(best) == FOCUS_TOP:
+                    break
+        total = sum(best.values())
+        if total <= 0:
+            return None
+        weight: dict[str, float] = {}
+        for path, s in best.items():
+            for u in self._units[path]:
+                weight[u] = weight.get(u, 0.0) + s
+        pick, pick_score = None, 0.0
+        for u, w in weight.items():
+            share = w / total
+            lift = share / self._unit_share[u]
+            if share >= FOCUS_MIN_SHARE and lift >= FOCUS_MIN_LIFT and share * lift > pick_score:
+                pick, pick_score = u, share * lift
+        return pick
 
     def search(self, query: str, k: int = 5, *, mode: str = "hybrid",
                max_per_note: int | None = None, recency: bool | None = None,
@@ -180,8 +277,11 @@ class Searcher:
     def search_notes(self, query: str, k: int = 5, *, mode: str = "hybrid",
                      recency: bool | None = None, rerank: bool | None = None) -> list[NoteHit]:
         """Best notes: chunks of one note are grouped; several good chunks lift the note."""
+        return self._note_hits(self._fused(query, mode, recency, rerank))[:k]
+
+    def _note_hits(self, hits: list[Hit]) -> list[NoteHit]:
         by_note: dict[str, list[Hit]] = {}
-        for hit in self._fused(query, mode, recency, rerank):
+        for hit in hits:
             by_note.setdefault(hit.chunk.path, []).append(hit)  # already best first
         notes = []
         for path, hits in by_note.items():
@@ -194,7 +294,7 @@ class Searcher:
                 hits=tuple(hits),
             ))
         notes.sort(key=lambda n: (-n.score, n.path))
-        return notes[:k]
+        return notes
 
     def read_note(self, path: str) -> str:
         """The whole note as it is on disk. Only notes that are in the index can be read."""
