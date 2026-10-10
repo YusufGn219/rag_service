@@ -153,6 +153,13 @@ listed in `.gitignore`, so they are not committed. Do not commit your `.env`.
 Built for personal use and working well there. Search quality depends on your notes, so
 measure it on your own with `python -m rag_service.evaluate`.
 
+## License
+
+[PolyForm Noncommercial License 1.0.0](LICENSE). You may use, copy and modify the software for
+personal, hobby, educational, research and other non-commercial purposes. Commercial use is not
+permitted under this license. Note that this is a source-available license, not an OSI-approved
+open source license.
+
 ---
 
 # Türkçe
@@ -264,3 +271,10 @@ araç çağrısında HTTP servisini arka planda kendisi başlatır. Kontrol içi
 
 İndeks, modeller, değerlendirme soruları ve denetim raporları `data/` altındadır ve
 `.gitignore` içindedir, commit edilmez. `.env` dosyanı da commit etme.
+
+## Lisans
+
+[PolyForm Noncommercial License 1.0.0](LICENSE). Yazılımı kişisel, hobi, eğitim, araştırma ve
+diğer ticari olmayan amaçlarla kullanabilir, kopyalayabilir ve değiştirebilirsin. Ticari
+kullanıma bu lisansla izin verilmez. Bu, OSI onaylı bir açık kaynak lisansı değil, kaynağı
+açık (source-available) bir lisanstır.
