@@ -79,6 +79,7 @@ lacks. `.env.example` documents every option (in English and Turkish):
 | `RAG_IDLE_MINUTES` | `10` | Unload models after this many idle minutes (`0` = never) |
 | `RAG_REINDEX_MINUTES` | `10` | Update the index this often (`0` = never) |
 | `RAG_API_KEY` | none | If set, HTTP requests must send it as `X-API-Key` or `Authorization: Bearer ...` |
+| `RAG_PARENT_CHARS` | `3000` | Each result also carries the wider section (parent) the best chunk sits in, cut to this many characters around the chunk (`0` = off) |
 
 ## Use
 

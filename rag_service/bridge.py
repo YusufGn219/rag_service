@@ -38,7 +38,8 @@ def create_bridge(client) -> MCPServer:
     @server.tool()
     async def search_notes(query: str, k: int = 5) -> list[dict]:
         """Search the notes. Returns up to k notes (1-20), best first: path, title, date,
-        score, section and text of the best passage, plus up to 2 extra passages."""
+        score, section and text of the best passage, plus up to 2 extra passages and `parent`
+        (the wider section the best passage sits in; null when it adds nothing)."""
         return await _call(client.search, query, k)
 
     @server.tool()

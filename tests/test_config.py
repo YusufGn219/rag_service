@@ -175,5 +175,12 @@ def test_bad_service_settings_rejected(tmp_path, key, val):
         load_config({"RAG_VAULT_ROOT": str(tmp_path), key: val})
 
 
+def test_parent_chars_default_and_override(tmp_path):
+    assert load_config({"RAG_VAULT_ROOT": str(tmp_path)}).parent_chars == 3000
+    assert load_config({"RAG_VAULT_ROOT": str(tmp_path), "RAG_PARENT_CHARS": "0"}).parent_chars == 0
+    with pytest.raises(ConfigError, match="RAG_PARENT_CHARS"):
+        load_config({"RAG_VAULT_ROOT": str(tmp_path), "RAG_PARENT_CHARS": "-5"})
+
+
 def test_empty_api_key_means_none(tmp_path):
     assert load_config({"RAG_VAULT_ROOT": str(tmp_path), "RAG_API_KEY": "  "}).api_key is None

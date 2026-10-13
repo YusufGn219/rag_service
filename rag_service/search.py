@@ -14,7 +14,7 @@ from typing import NamedTuple
 import numpy as np
 
 from rag_service.bm25 import tokenize
-from rag_service.chunker import Chunk, note_title
+from rag_service.chunker import Chunk, Parent, note_title
 from rag_service.config import Config, ConfigError, load_config
 from rag_service.recency import (
     DEFAULT_HALF_LIFE_DAYS,
@@ -119,6 +119,7 @@ class Searcher:
         self._project_weight = project_weight
         self._half_life_days = half_life_days
         self._resolver = resolver
+        self._parents = {(p.path, p.id): p for p in data.parents}
         self._known_notes = {c.path for c in data.chunks}
         self._dates: dict[str, date | None] = {p: note_date(p) for p in self._known_notes}
         self._status = {p for p in self._known_notes if is_status_note(p)}
@@ -295,6 +296,10 @@ class Searcher:
             ))
         notes.sort(key=lambda n: (-n.score, n.path))
         return notes
+
+    def parent_of(self, chunk: Chunk) -> Parent | None:
+        """The wider section this chunk was cut from (None if the index has none for it)."""
+        return self._parents.get((chunk.path, chunk.parent_id))
 
     def read_note(self, path: str) -> str:
         """The whole note as it is on disk. Only notes that are in the index can be read."""

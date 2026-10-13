@@ -48,7 +48,7 @@ def _reset_counter():
     FakeEmbedder.created = 0
 
 
-def _make(tmp_path, *, idle=10, reindex=30, build=True, notes=None):
+def _make(tmp_path, *, idle=10, reindex=30, build=True, notes=None, env=None):
     vault = tmp_path / "vault"
     vault.mkdir(exist_ok=True)
     for name, text in (notes or {"kedi.md": "# Kedi\n\nkedi süt içiyor sessizce\n",
@@ -56,7 +56,7 @@ def _make(tmp_path, *, idle=10, reindex=30, build=True, notes=None):
         (vault / name).write_text(text, encoding="utf-8")
     cfg = load_config({"RAG_VAULT_ROOT": str(vault), "RAG_INDEX_DIR": str(tmp_path / "idx"),
                        "RAG_IDLE_MINUTES": str(idle), "RAG_REINDEX_MINUTES": str(reindex),
-                       "RAG_RERANK_DIR": ""})
+                       "RAG_RERANK_DIR": "", **(env or {})})
     if build:
         run_index(cfg, FakeEmbedder())
         FakeEmbedder.created = 0
@@ -95,6 +95,43 @@ def test_text_is_truncated_and_extras_capped(tmp_path):
     assert len(top["text"]) <= 600
     assert len(top["extra"]) <= 2
     assert all(len(e["text"]) <= 600 for e in top["extra"])
+
+
+PARENT_NOTE = (
+    "# Ana\n\n" + "giris " * 120 + "\n\n"
+    "## Bir\n\n" + "alfa " * 120 + "\n\n"
+    "## Iki\n\nzebra " + "beta " * 120
+)
+
+
+def test_result_carries_the_parent_section(tmp_path):
+    svc, *_ = _make(tmp_path, notes={"n.md": PARENT_NOTE})
+    top = svc.search("zebra")[0]
+    assert top["section"] == "Ana > Iki"
+    parent = top["parent"]
+    assert parent["section"] == "Ana"
+    # the parent reaches the sibling sections the matched chunk does not contain
+    assert "alfa" in parent["text"] and "giris" in parent["text"]
+    assert "alfa" not in top["text"]
+    json.dumps(top)
+
+
+def test_parent_is_none_when_it_adds_nothing(tmp_path):
+    svc, *_ = _make(tmp_path)
+    assert svc.search("kedi süt")[0]["parent"] is None
+
+
+def test_parent_is_cut_around_the_matched_chunk(tmp_path):
+    svc, *_ = _make(tmp_path, notes={"n.md": PARENT_NOTE}, env={"RAG_PARENT_CHARS": "900"})
+    parent = svc.search("zebra")[0]["parent"]
+    assert len(parent["text"]) <= 900 + 2
+    assert "zebra" in parent["text"]
+    assert parent["text"].startswith("…")
+
+
+def test_parent_can_be_switched_off(tmp_path):
+    svc, *_ = _make(tmp_path, notes={"n.md": PARENT_NOTE}, env={"RAG_PARENT_CHARS": "0"})
+    assert svc.search("zebra")[0]["parent"] is None
 
 
 def test_empty_query_returns_nothing(tmp_path):

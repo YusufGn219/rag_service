@@ -19,6 +19,7 @@ from rag_service.store import index_path
 SNIPPET_CHARS = 600
 EXTRA_CHUNKS = 2
 MAX_RESULTS = 20
+PARENT_MIN_GAIN = 200  # a parent only a few characters longer than the chunk is left out
 
 
 def _default_embedder(cfg: Config):
@@ -33,6 +34,16 @@ def _default_searcher(cfg: Config, embedder) -> Searcher:
 
 def _clip(text: str, limit: int = SNIPPET_CHARS) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _around(text: str, anchor: str, limit: int) -> str:
+    """At most `limit` characters of `text`, positioned around `anchor` (where it is found)."""
+    if len(text) <= limit:
+        return text
+    at = max(text.find(anchor[:80]), 0) if anchor else 0
+    start = max(0, min(at - (limit - len(anchor)) // 2, len(text) - limit))
+    end = start + limit
+    return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
 
 
 class _LazyEmbedder:
@@ -94,7 +105,8 @@ class SearchService:
             return []
         k = max(1, min(int(k), MAX_RESULTS))
         results = []
-        for note in self._get_searcher().search_notes(query, k=k):
+        searcher = self._get_searcher()
+        for note in searcher.search_notes(query, k=k):
             best, extras = note.hits[0], note.hits[1:1 + EXTRA_CHUNKS]
             results.append({
                 "path": note.path,
@@ -105,8 +117,17 @@ class SearchService:
                 "section": best.chunk.heading_path,
                 "text": _clip(best.chunk.text),
                 "extra": [{"section": h.chunk.heading_path, "text": _clip(h.chunk.text)} for h in extras],
+                "parent": self._parent_of(searcher, best.chunk),
             })
         return results
+
+    def _parent_of(self, searcher: Searcher, chunk) -> dict | None:
+        """The wider section around the best chunk, or None when it adds nothing."""
+        limit = self._cfg.parent_chars
+        parent = searcher.parent_of(chunk) if limit > 0 else None
+        if parent is None or len(parent.text) <= len(chunk.text) + PARENT_MIN_GAIN:
+            return None
+        return {"section": parent.heading_path, "text": _around(parent.text, chunk.text, limit)}
 
     def read_note(self, path: str) -> str:
         """A whole note, but only one that is in the index (so `../` and stray paths fail)."""

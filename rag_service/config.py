@@ -26,6 +26,7 @@ class Config:
     idle_minutes: float = 10  # unload models after this long without a search; 0 = never
     reindex_minutes: float = 10  # update the index this often; 0 = never
     api_key: str | None = None  # when set, the HTTP API requires it
+    parent_chars: int = 3000  # max size of the "parent" section a search result carries; 0 = off
 
     def note_key(self, path: Path) -> str:
         """Stable id of a note: its path relative to its root ("root-name/..." with several roots)."""
@@ -136,4 +137,5 @@ def load_config(env=None, dotenv_path=None) -> Config:
                   port=_number(env, "RAG_PORT", 2190, kind=int, low=1, high=65535),
                   idle_minutes=_number(env, "RAG_IDLE_MINUTES", 10),
                   reindex_minutes=_number(env, "RAG_REINDEX_MINUTES", 10),
-                  api_key=env.get("RAG_API_KEY", "").strip() or None)
+                  api_key=env.get("RAG_API_KEY", "").strip() or None,
+                  parent_chars=_number(env, "RAG_PARENT_CHARS", 3000, kind=int, low=0))
