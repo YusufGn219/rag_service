@@ -1,4 +1,10 @@
-from rag_service.chunker import chunk_note, count_tokens, parse_frontmatter
+from rag_service.chunker import (
+    chunk_note,
+    chunk_note_with_parents,
+    count_tokens,
+    parent_key,
+    parse_frontmatter,
+)
 
 
 def _words(n, word="kelime"):
@@ -267,3 +273,53 @@ def test_normal_long_title_still_a_heading():
     title = "Bu oldukca uzun ama gercek bir baslik metnidir"
     chunks = chunk_note("n.md", f"# {title}\n" + _words(80))
     assert chunks[0].heading_path == title
+
+
+# ---- parent sections ----
+
+def test_parent_key_drops_the_last_heading():
+    assert parent_key("A > B > C") == "A > B"
+    assert parent_key("A > B") == "A"
+    assert parent_key("A") == "A"
+    assert parent_key("") == ""
+
+
+def test_chunks_point_to_the_section_under_their_parent_heading():
+    text = (
+        "# Ana\n" + _words(70, "giris") + "\n"
+        "## Bir\n" + _words(70, "alfa") + "\n"
+        "## Iki\n" + _words(70, "beta") + "\n"
+        "# Diger\n" + _words(70, "gama")
+    )
+    chunks, parents = chunk_note_with_parents("n.md", text)
+    by_id = {p.id: p for p in parents}
+    assert all(c.parent_id in by_id for c in chunks)
+    ana = next(c for c in chunks if c.heading_path == "Ana")
+    bir = next(c for c in chunks if c.heading_path == "Ana > Bir")
+    iki = next(c for c in chunks if c.heading_path == "Ana > Iki")
+    diger = next(c for c in chunks if c.heading_path == "Diger")
+    # 'Ana' and its children share one parent: the whole Ana section
+    assert ana.parent_id == bir.parent_id == iki.parent_id != diger.parent_id
+    whole = by_id[bir.parent_id]
+    assert whole.path == "n.md" and whole.heading_path == "Ana"
+    assert all(w in whole.text for w in ("giris", "alfa", "beta")) and "gama" not in whole.text
+
+
+def test_parent_text_has_no_chunk_overlap_and_keeps_order():
+    text = "# Uzun\n" + "\n\n".join(f"par{i} " + _words(40, f"w{i}") for i in range(30))
+    chunks, parents = chunk_note_with_parents("n.md", text, max_tokens=120, overlap_tokens=30)
+    assert len(chunks) > 3 and len(parents) == 1
+    assert parents[0].text.count("par7 ") == 1
+    assert parents[0].text.index("par2 ") < parents[0].text.index("par20 ")
+
+
+def test_text_before_the_first_heading_is_its_own_parent():
+    text = _words(70, "giris") + "\n# Ana\n" + _words(70, "alfa")
+    chunks, parents = chunk_note_with_parents("n.md", text)
+    assert [p.heading_path for p in parents] == ["", "Ana"]
+    assert chunks[0].parent_id == 0 and chunks[1].parent_id == 1
+
+
+def test_chunk_note_still_returns_only_chunks():
+    text = "# A\n" + _words(70)
+    assert chunk_note("n.md", text) == chunk_note_with_parents("n.md", text)[0]

@@ -13,7 +13,7 @@ from rag_service.chunker import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_MIN_TOKENS,
     DEFAULT_OVERLAP_TOKENS,
-    chunk_note,
+    chunk_note_with_parents,
 )
 from rag_service.config import Config, ConfigError, load_config
 from rag_service.embeddings import MODEL_REPO
@@ -22,7 +22,7 @@ from rag_service.manifest import compute_changes, load_manifest, save_manifest, 
 from rag_service.scanner import scan_notes
 from rag_service.store import IndexData, load_index, save_index
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3  # 3: chunks point to parent sections
 _EMBED_BATCH = 256
 
 
@@ -82,19 +82,22 @@ def _run_index(cfg, embedder, model_id, max_tokens, overlap_tokens, min_tokens, 
     drop = set(changes.changed) | set(changes.deleted)
     kept_rows = [i for i, c in enumerate(data.chunks) if c.path not in drop] if data else []
     kept_chunks = [data.chunks[i] for i in kept_rows]
+    kept_parents = [p for p in data.parents if p.path not in drop] if data else []
     kept_vectors = data.vectors[kept_rows] if kept_rows else None
 
     new_chunks = []
+    new_parents = []
     for rel in changes.changed:
         try:
             text = cfg.resolve_key(rel).read_text(encoding="utf-8", errors="replace")
         except OSError:
             snap.pop(rel, None)  # vanished since the scan; treat as deleted next time
             continue
-        new_chunks.extend(
-            chunk_note(rel, text, max_tokens=max_tokens, overlap_tokens=overlap_tokens,
-                       min_tokens=min_tokens, count=embedder.count_tokens)
-        )
+        note_chunks, note_parents = chunk_note_with_parents(
+            rel, text, max_tokens=max_tokens, overlap_tokens=overlap_tokens,
+            min_tokens=min_tokens, count=embedder.count_tokens)
+        new_chunks.extend(note_chunks)
+        new_parents.extend(note_parents)
 
     texts = [c.embed_text for c in new_chunks]
     parts = []
@@ -112,7 +115,9 @@ def _run_index(cfg, embedder, model_id, max_tokens, overlap_tokens, min_tokens, 
         chunks = [chunks[i] for i in order]
         vectors = vectors[order]
 
-    save_index(cfg, IndexData(chunks=chunks, vectors=vectors, bm25=index_chunks(chunks), settings=settings))
+    parents = sorted(kept_parents + new_parents, key=lambda p: (p.path, p.id))
+    save_index(cfg, IndexData(chunks=chunks, vectors=vectors, bm25=index_chunks(chunks),
+                              settings=settings, parents=parents))
     save_manifest(cfg, snap)
     return IndexStats(
         notes=len(snap),

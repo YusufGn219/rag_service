@@ -25,11 +25,33 @@ class Chunk:
     heading_path: str  # e.g. "Mimari > Embedding"; "" before the first heading
     text: str
     tags: tuple[str, ...]
+    parent_id: int = -1  # the Parent (same note) this chunk belongs to; -1 = none
 
     @property
     def embed_text(self) -> str:
         """What the embedding model and BM25 should see: note title, folder, tags, heading path, body."""
         return _header(self.path, self.tags, self.heading_path) + self.text
+
+
+@dataclass(frozen=True)
+class Parent:
+    """The wider section a chunk was cut from: search matches small chunks, returns this."""
+    path: str  # note path relative to the vault root
+    id: int  # position within the note; Chunk.parent_id points here
+    heading_path: str  # the section's heading path, e.g. "Mimari > Embedding"
+    text: str
+
+
+def parent_key(heading_path: str) -> str:
+    """The heading path of the section that holds a chunk: 'A > B > C' -> 'A > B'.
+
+    A top-level heading ('A') and text before any heading ('') are their own parent.
+    """
+    return heading_path.rsplit(" > ", 1)[0] if " > " in heading_path else heading_path
+
+
+def _under(heading_path: str, key: str) -> bool:
+    return heading_path == key or heading_path.startswith(key + " > ")
 
 
 def note_title(path: str) -> str:
@@ -289,6 +311,22 @@ def chunk_note(
     (Embedder.count_tokens) to size chunks exactly. max_tokens should leave a little
     room under the model limit for its special tokens and prefix.
     """
+    return chunk_note_with_parents(path, text, max_tokens, overlap_tokens, min_tokens, count)[0]
+
+
+def chunk_note_with_parents(
+    path: str,
+    text: str,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    overlap_tokens: int = DEFAULT_OVERLAP_TOKENS,
+    min_tokens: int = DEFAULT_MIN_TOKENS,
+    count: Callable[[str], int] = count_tokens,
+) -> tuple[list[Chunk], list[Parent]]:
+    """Like chunk_note, plus the parent sections the chunks point to (Chunk.parent_id).
+
+    A parent holds the text of every section under its heading path (see parent_key), in
+    note order and without the chunk overlap, so it is the whole passage a chunk sits in.
+    """
     fm_tags, body = parse_frontmatter(text)
     tags = _merge_tags(fm_tags, _inline_tags(body))
 
@@ -299,6 +337,15 @@ def chunk_note(
         return max(max_tokens - header, max_tokens // 4)
 
     sections = _merge_small(_split_sections(body), limit_for, count, min_tokens)
+
+    parent_ids: dict[str, int] = {}
+    for heading_path, _ in sections:
+        parent_ids.setdefault(parent_key(heading_path), len(parent_ids))
+    parents = [
+        Parent(path=path, id=pid, heading_path=key,
+               text="\n\n".join(t for hp, t in sections if _under(hp, key)))
+        for key, pid in parent_ids.items()
+    ]
 
     chunks: list[Chunk] = []
     for heading_path, sec_text in sections:
@@ -311,6 +358,7 @@ def chunk_note(
         for piece in pieces:
             chunks.append(
                 Chunk(path=path, index=len(chunks), heading_path=heading_path,
-                      text=piece.strip(), tags=tags)
+                      text=piece.strip(), tags=tags,
+                      parent_id=parent_ids[parent_key(heading_path)])
             )
-    return chunks
+    return chunks, parents

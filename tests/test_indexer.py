@@ -271,3 +271,21 @@ def test_run_index_releases_lock_after_failure(tmp_path):
     with pytest.raises(RuntimeError):
         run_index(cfg, emb)
     assert not lock_path(cfg).exists()
+
+
+def test_parents_are_stored_and_only_the_changed_note_gets_new_ones(tmp_path):
+    vault, cfg = _setup(tmp_path)
+    _note(vault, "a.md", "# Ana\n" + "kelime " * 80 + "\n## Alt\n" + "sozcuk " * 80)
+    b = _note(vault, "b.md", "# B\n" + "eski " * 80)
+    run_index(cfg, FakeEmbedder())
+    old = load_index(cfg)
+    assert {p.path for p in old.parents} == {"a.md", "b.md"}
+    assert {(c.path, c.parent_id) for c in old.chunks} <= {(p.path, p.id) for p in old.parents}
+
+    _note(vault, "b.md", "# B\n" + "yepyeni " * 80)
+    _bump_mtime(b)
+    run_index(cfg, FakeEmbedder())
+    new = load_index(cfg)
+    assert [p for p in new.parents if p.path == "a.md"] == [p for p in old.parents if p.path == "a.md"]
+    assert any("yepyeni" in p.text for p in new.parents if p.path == "b.md")
+    assert not any("eski" in p.text for p in new.parents)

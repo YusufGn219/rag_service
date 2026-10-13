@@ -5,12 +5,12 @@ One file, replaced atomically, so the three parts can never disagree after a cra
 import json
 import os
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from rag_service.bm25 import BM25Index
-from rag_service.chunker import Chunk
+from rag_service.chunker import Chunk, Parent
 from rag_service.config import Config
 
 _INDEX_NAME = "index.npz"
@@ -23,6 +23,7 @@ class IndexData:
     vectors: np.ndarray  # (len(chunks), dim) float32, one unit-length row per chunk
     bm25: BM25Index
     settings: dict  # what the index was built with (model, chunk sizes, tokenizer...)
+    parents: list[Parent] = field(default_factory=list)  # sections that Chunk.parent_id points to
 
 
 def index_path(cfg: Config):
@@ -46,8 +47,14 @@ def save_index(cfg: Config, data: IndexData) -> None:
         "chunks": _pack(
             [
                 {"path": c.path, "index": c.index, "heading_path": c.heading_path,
-                 "text": c.text, "tags": list(c.tags)}
+                 "text": c.text, "tags": list(c.tags), "parent_id": c.parent_id}
                 for c in data.chunks
+            ]
+        ),
+        "parents": _pack(
+            [
+                {"path": p.path, "id": p.id, "heading_path": p.heading_path, "text": p.text}
+                for p in data.parents
             ]
         ),
         "settings": _pack(data.settings),
@@ -66,9 +73,14 @@ def load_index(cfg: Config) -> IndexData | None:
         with np.load(index_path(cfg), allow_pickle=False) as z:
             chunks = [
                 Chunk(path=d["path"], index=d["index"], heading_path=d["heading_path"],
-                      text=d["text"], tags=tuple(d["tags"]))
+                      text=d["text"], tags=tuple(d["tags"]), parent_id=d.get("parent_id", -1))
                 for d in _unpack(z["chunks"])
             ]
+            parents = (
+                [Parent(path=d["path"], id=d["id"], heading_path=d["heading_path"], text=d["text"])
+                 for d in _unpack(z["parents"])]
+                if "parents" in z.files else []
+            )
             vectors = np.asarray(z["vectors"], dtype=np.float32)
             settings = _unpack(z["settings"])
             bm25 = BM25Index.from_arrays(
@@ -78,4 +90,4 @@ def load_index(cfg: Config) -> IndexData | None:
         return None
     if not (len(chunks) == vectors.shape[0] == bm25.n):
         return None
-    return IndexData(chunks=chunks, vectors=vectors, bm25=bm25, settings=settings)
+    return IndexData(chunks=chunks, vectors=vectors, bm25=bm25, settings=settings, parents=parents)

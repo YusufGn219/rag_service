@@ -1,7 +1,7 @@
 import numpy as np
 
 from rag_service.bm25 import BM25Index, index_chunks, tokenize
-from rag_service.chunker import Chunk
+from rag_service.chunker import Chunk, Parent
 from rag_service.config import load_config
 from rag_service.store import IndexData, index_path, load_index, save_index
 
@@ -74,3 +74,14 @@ def test_save_leaves_no_temp_files_and_overwrites(tmp_path):
     save_index(cfg, _data())
     save_index(cfg, _data())
     assert sorted(p.name for p in cfg.index_dir.iterdir()) == ["index.npz"]
+
+
+def test_roundtrip_preserves_parents_and_parent_ids(tmp_path):
+    cfg = _cfg(tmp_path)
+    data = _data()
+    data.chunks[0] = Chunk("a.md", 0, "Ana > Alt", "kedi uyuyor şişman", ("hayvan", "ev"), parent_id=0)
+    data.parents = [Parent("a.md", 0, "Ana", "# Ana\nkedi uyuyor şişman\n## Alt\nkedi")]
+    save_index(cfg, data)
+    back = load_index(cfg)
+    assert back.parents == data.parents
+    assert back.chunks[0].parent_id == 0 and back.chunks[1].parent_id == -1
