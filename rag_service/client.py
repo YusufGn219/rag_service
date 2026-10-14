@@ -121,9 +121,14 @@ class ServiceClient:
 
     # ---- public calls (each makes sure the service is up first) ----
 
-    def search(self, query: str, k: int = 5) -> list[dict]:
+    def search(self, query: str, k: int = 5, include_parent: bool = False) -> list[dict]:
         self.ensure_running()
-        return self._request("POST", "/search", {"query": query, "k": k})["results"]
+        body = {"query": query, "k": k, **({"include_parent": True} if include_parent else {})}
+        return self._request("POST", "/search", body)["results"]
+
+    def read_section(self, path: str, section_id: int) -> dict:
+        self.ensure_running()
+        return self._request("GET", "/section?" + urllib.parse.urlencode({"path": path, "id": section_id}))
 
     def read_note(self, path: str) -> str:
         self.ensure_running()

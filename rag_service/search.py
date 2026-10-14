@@ -299,7 +299,11 @@ class Searcher:
 
     def parent_of(self, chunk: Chunk) -> Parent | None:
         """The wider section this chunk was cut from (None if the index has none for it)."""
-        return self._parents.get((chunk.path, chunk.parent_id))
+        return self.parent(chunk.path, chunk.parent_id)
+
+    def parent(self, path: str, parent_id: int) -> Parent | None:
+        """A parent section by note path and id (what a search result's `parent.id` names)."""
+        return self._parents.get((path, parent_id))
 
     def read_note(self, path: str) -> str:
         """The whole note as it is on disk. Only notes that are in the index can be read."""

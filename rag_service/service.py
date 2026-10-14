@@ -99,8 +99,12 @@ class SearchService:
 
     # ---- operations ----
 
-    def search(self, query: str, k: int = 5) -> list[dict]:
-        """The best notes for a question, as plain JSON-ready dicts."""
+    def search(self, query: str, k: int = 5, include_parent: bool = False) -> list[dict]:
+        """The best notes for a question, as plain JSON-ready dicts.
+
+        Each result's `parent` says which wider section its best passage sits in (id, name,
+        size); fetch the text with read_section. include_parent=True also puts the text there.
+        """
         if not query.strip():
             return []
         k = max(1, min(int(k), MAX_RESULTS))
@@ -117,17 +121,35 @@ class SearchService:
                 "section": best.chunk.heading_path,
                 "text": _clip(best.chunk.text),
                 "extra": [{"section": h.chunk.heading_path, "text": _clip(h.chunk.text)} for h in extras],
-                "parent": self._parent_of(searcher, best.chunk),
+                "parent": self._parent_of(searcher, best.chunk, include_parent),
             })
         return results
 
-    def _parent_of(self, searcher: Searcher, chunk) -> dict | None:
-        """The wider section around the best chunk, or None when it adds nothing."""
+    def _parent_of(self, searcher: Searcher, chunk, include_text: bool) -> dict | None:
+        """Which wider section the best chunk sits in, or None when it adds nothing."""
         limit = self._cfg.parent_chars
         parent = searcher.parent_of(chunk) if limit > 0 else None
         if parent is None or len(parent.text) <= len(chunk.text) + PARENT_MIN_GAIN:
             return None
-        return {"section": parent.heading_path, "text": _around(parent.text, chunk.text, limit)}
+        out = {"id": parent.id, "section": parent.heading_path, "chars": len(parent.text)}
+        if include_text:
+            out["text"] = _around(parent.text, chunk.text, limit)
+        return out
+
+    def read_section(self, path: str, section_id: int) -> dict:
+        """One parent section (a search result's `parent.id`), from its start; cut at
+        RAG_PARENT_CHARS, in which case `truncated` is true and read_note has the rest."""
+        limit = self._cfg.parent_chars
+        if limit <= 0:
+            raise ServiceError("parent sections are switched off (RAG_PARENT_CHARS=0)")
+        parent = self._get_searcher().parent(path, section_id)
+        if parent is None:
+            raise ServiceError(f"note {path!r} has no section {section_id}; "
+                               "use a search result's parent.id")
+        cut = len(parent.text) > limit
+        return {"path": path, "id": parent.id, "section": parent.heading_path,
+                "chars": len(parent.text), "truncated": cut,
+                "text": parent.text[:limit] + "…" if cut else parent.text}
 
     def read_note(self, path: str) -> str:
         """A whole note, but only one that is in the index (so `../` and stray paths fail)."""

@@ -20,7 +20,8 @@ from rag_service.errors import ServiceError
 INSTRUCTIONS = (
     "Search the user's Obsidian notes. Use search_notes with a natural-language question "
     "(Turkish or English); it returns the best notes with their best passage. "
-    "Use read_note with a result's `path` to read the whole note."
+    "Use read_note with a result's `path` to read the whole note, or read_section with a result's "
+    "`path` and `parent.id` to read just the wider section its passage sits in."
 )
 
 
@@ -39,8 +40,15 @@ def create_bridge(client) -> MCPServer:
     async def search_notes(query: str, k: int = 5) -> list[dict]:
         """Search the notes. Returns up to k notes (1-20), best first: path, title, date,
         score, section and text of the best passage, plus up to 2 extra passages and `parent`
-        (the wider section the best passage sits in; null when it adds nothing)."""
+        (id, name and size in characters of the wider section the best passage sits in; null
+        when that adds nothing). Read it with read_section."""
         return await _call(client.search, query, k)
+
+    @server.tool()
+    async def read_section(path: str, id: int) -> dict:
+        """Read the wider section (parent) of a search result: pass its `path` and `parent.id`.
+        Shorter than read_note; cut after a few thousand characters (`truncated` says so)."""
+        return await _call(client.read_section, path, id)
 
     @server.tool()
     async def read_note(path: str) -> str:

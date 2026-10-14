@@ -22,6 +22,13 @@ class FakeClient:
             raise ServiceError("'yok.md' is not an indexed note")
         return "# Kedi\n\nkedi süt içiyor"
 
+    def read_section(self, path, section_id):
+        self.calls.append(("section", path, section_id))
+        if section_id == 999:
+            raise ServiceError("note 'kedi.md' has no section 999")
+        return {"path": path, "id": section_id, "section": "Kedi", "chars": 20, "truncated": False,
+                "text": "kedi süt içiyor"}
+
 
 def _run(coro_fn):
     async def main():
@@ -30,11 +37,11 @@ def _run(coro_fn):
     anyio.run(main)
 
 
-def test_lists_both_tools():
+def test_lists_all_tools():
     async def go():
         async with Client(create_bridge(FakeClient())) as c:
             names = {t.name for t in (await c.list_tools()).tools}
-            assert names == {"search_notes", "read_note"}
+            assert names == {"search_notes", "read_note", "read_section"}
 
     _run(go)
 
@@ -61,6 +68,21 @@ def test_search_default_k():
 
     _run(go)
     assert fake.calls == [("search", "kedi", 5)]
+
+
+def test_read_section_forwards_path_and_id():
+    fake = FakeClient()
+
+    async def go():
+        async with Client(create_bridge(fake)) as c:
+            res = await c.call_tool("read_section", {"path": "kedi.md", "id": 2})
+            assert not res.is_error
+            assert "kedi süt içiyor" in str(res.content)
+            bad = await c.call_tool("read_section", {"path": "kedi.md", "id": 999})
+            assert bad.is_error and "no section 999" in str(bad.content)
+
+    _run(go)
+    assert fake.calls[0] == ("section", "kedi.md", 2)
 
 
 def test_read_note_returns_text():

@@ -38,6 +38,34 @@ def test_search_without_index_is_503(tmp_path):
     assert "reindex" in r.json()["detail"]
 
 
+def test_search_names_the_parent_and_can_include_its_text(tmp_path):
+    from test_service import PARENT_NOTE
+
+    c, *_ = _client(tmp_path, notes={"n.md": PARENT_NOTE})
+    plain = c.post("/search", json={"query": "zebra"}).json()["results"][0]["parent"]
+    assert set(plain) == {"id", "section", "chars"}
+    full = c.post("/search", json={"query": "zebra", "include_parent": True}).json()["results"][0]["parent"]
+    assert "alfa" in full["text"]
+
+
+def test_section(tmp_path):
+    from test_service import PARENT_NOTE
+
+    c, *_ = _client(tmp_path, notes={"n.md": PARENT_NOTE})
+    pid = c.post("/search", json={"query": "zebra"}).json()["results"][0]["parent"]["id"]
+    r = c.get("/section", params={"path": "n.md", "id": pid})
+    assert r.status_code == 200
+    assert r.json()["section"] == "Ana" and "alfa" in r.json()["text"]
+
+
+def test_section_errors(tmp_path):
+    c, *_ = _client(tmp_path)
+    assert c.get("/section", params={"path": "kedi.md", "id": 999}).status_code == 404
+    assert c.get("/section", params={"path": "yok.md", "id": 0}).status_code == 404
+    assert c.get("/section", params={"path": "kedi.md"}).status_code == 422
+    assert c.get("/section", params={"path": "kedi.md", "id": -1}).status_code == 422
+
+
 def test_note(tmp_path):
     c, *_ = _client(tmp_path)
     r = c.get("/note", params={"path": "kedi.md"})

@@ -52,7 +52,11 @@ class Stub:
                     code = {"noindex": 503, "busy": 409}.get(body["query"], 200)
                     if code != 200:
                         return self._reply(code, {"detail": f"stub {body['query']}"})
-                    return self._reply(200, {"results": [{"query": body["query"], "k": body["k"]}]})
+                    extra = {"include_parent": True} if "include_parent" in body else {}
+                    return self._reply(200, {"results": [{"query": body["query"], "k": body["k"], **extra}]})
+                if url.path == "/section":
+                    q = parse_qs(url.query)
+                    return self._reply(200, {"path": q["path"][0], "id": int(q["id"][0]), "text": "bölüm ğü"})
                 if url.path == "/note":
                     path = parse_qs(url.query)["path"][0]
                     if path == "yok.md":
@@ -122,6 +126,23 @@ def test_running_service_is_not_spawned(env):
     c = _client(cfg, lambda cfg: spawned.append(1))
     assert c.search("kedi", 3) == [{"query": "kedi", "k": 3}]
     assert spawned == []
+
+
+def test_include_parent_is_sent_only_when_asked_for(env):
+    cfg, stub = env()
+    stub.start()
+    c = _client(cfg, lambda cfg: None)
+    c.search("kedi")
+    c.search("kedi", include_parent=True)
+    bodies = [b for method, path, _, b in stub.seen if path == "/search"]
+    assert "include_parent" not in bodies[0] and bodies[1]["include_parent"] is True
+
+
+def test_read_section_asks_for_path_and_id(env):
+    cfg, stub = env()
+    stub.start()
+    sec = _client(cfg, lambda cfg: None).read_section("a b/ç.md", 3)
+    assert sec == {"path": "a b/ç.md", "id": 3, "text": "bölüm ğü"}
 
 
 def test_down_service_is_spawned_once_and_used(env):

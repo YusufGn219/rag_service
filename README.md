@@ -10,7 +10,7 @@ It can be used three ways:
 
 - **Command line:** `python -m rag_service.search "your question"`
 - **HTTP service:** a small FastAPI server on `127.0.0.1`
-- **MCP tools for Claude Code:** `search_notes` and `read_note`, through a thin stdio bridge
+- **MCP tools for Claude Code:** `search_notes`, `read_section` and `read_note`, through a thin stdio bridge
 
 ## How it works
 
@@ -79,7 +79,7 @@ lacks. `.env.example` documents every option (in English and Turkish):
 | `RAG_IDLE_MINUTES` | `10` | Unload models after this many idle minutes (`0` = never) |
 | `RAG_REINDEX_MINUTES` | `10` | Update the index this often (`0` = never) |
 | `RAG_API_KEY` | none | If set, HTTP requests must send it as `X-API-Key` or `Authorization: Bearer ...` |
-| `RAG_PARENT_CHARS` | `3000` | Each result also carries the wider section (parent) the best chunk sits in, cut to this many characters around the chunk (`0` = off) |
+| `RAG_PARENT_CHARS` | `3000` | Longest parent section text returned (by `read_section`, or by `/search` with `include_parent`); longer ones are cut (`0` = parent sections off) |
 
 ## Use
 
@@ -103,7 +103,8 @@ python -m rag_service.server            # --port N overrides RAG_PORT
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /search` | body `{"query": "...", "k": 5}` |
+| `POST /search` | body `{"query": "...", "k": 5}`; each result has `parent` `{id, section, chars}`, the wider section its best passage sits in (`null` if it adds nothing). Add `"include_parent": true` to get the section text in it too (about 2.5x bigger answers) |
+| `GET /section?path=...&id=...` | text of that parent section (`path` and `parent.id` from a search result), cut after `RAG_PARENT_CHARS` |
 | `GET /note?path=...` | full text of a note, `path` as returned by search |
 | `POST /reindex` | update the index now |
 | `GET /health` | status, version, process id |
@@ -120,9 +121,10 @@ claude mcp add rag --scope user -e PYTHONPATH=<project> -- <project>/.venv/Scrip
 
 `PYTHONPATH` is required, because Claude Code does not start the bridge from the project
 folder. The bridge starts the HTTP service in the background on the first tool call
-(log: `<RAG_INDEX_DIR>/server.log`). It offers two tools:
+(log: `<RAG_INDEX_DIR>/server.log`). It offers three tools:
 
 - `search_notes(query, k=5)`
+- `read_section(path, id)`: the wider section of a result (its `parent.id`), shorter than the whole note
 - `read_note(path)`
 
 Check it with `claude mcp get rag`, then restart Claude Code.
@@ -179,7 +181,7 @@ sağlayıcısı anahtarı gerekmez. Türkçe ve İngilizce notlarla birlikte kul
 
 - **Komut satırı:** `python -m rag_service.search "sorun"`
 - **HTTP servisi:** `127.0.0.1` üzerinde küçük bir FastAPI sunucusu
-- **Claude Code için MCP araçları:** `search_notes` ve `read_note`
+- **Claude Code için MCP araçları:** `search_notes`, `read_section` ve `read_note`
 
 ## Nasıl çalışır?
 
@@ -247,7 +249,10 @@ HTTP servisi:
 python -m rag_service.server            # --port N, RAG_PORT'u ezer
 ```
 
-Uçlar: `POST /search`, `GET /note?path=...`, `POST /reindex`, `GET /health`.
+Uçlar: `POST /search`, `GET /section?path=...&id=...`, `GET /note?path=...`, `POST /reindex`, `GET /health`.
+Her arama sonucundaki `parent` (`id`, `section`, `chars`), eşleşen parçanın bağlı olduğu daha geniş bölümü
+söyler; metni `/section` ile çekilir. `/search` isteğine `"include_parent": true` eklenirse metin sonuca
+da girer (yanıt yaklaşık 2,5 kat büyür).
 Servis kendi zamanlayıcısıyla indeksi günceller, boşta kalınca belleği boşaltır; açık
 bırakılabilir.
 

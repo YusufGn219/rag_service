@@ -13,6 +13,7 @@ from rag_service.version import code_version
 class SearchRequest(BaseModel):
     query: str
     k: int = Field(5, ge=1, le=MAX_RESULTS)
+    include_parent: bool = False  # put the parent section's text in each result (bigger answer)
 
 
 def _supplied_key(request: Request) -> str:
@@ -46,7 +47,11 @@ def create_app(service: SearchService, cfg: Config) -> FastAPI:
     # reindex does not block the others.
     @app.post("/search")
     def search(req: SearchRequest):
-        return {"results": service.search(req.query, req.k)}
+        return {"results": service.search(req.query, req.k, req.include_parent)}
+
+    @app.get("/section")
+    def section(path: str = Query(..., min_length=1), id: int = Query(..., ge=0)):
+        return service.read_section(path, id)
 
     @app.get("/note")
     def note(path: str = Query(..., min_length=1)):

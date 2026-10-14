@@ -104,16 +104,56 @@ PARENT_NOTE = (
 )
 
 
-def test_result_carries_the_parent_section(tmp_path):
+def test_result_names_the_parent_section_without_its_text(tmp_path):
     svc, *_ = _make(tmp_path, notes={"n.md": PARENT_NOTE})
     top = svc.search("zebra")[0]
     assert top["section"] == "Ana > Iki"
     parent = top["parent"]
-    assert parent["section"] == "Ana"
+    assert set(parent) == {"id", "section", "chars"}
+    assert parent["section"] == "Ana" and parent["chars"] > 1000
+    json.dumps(top)
+
+
+def test_include_parent_adds_the_text_around_the_matched_chunk(tmp_path):
+    svc, *_ = _make(tmp_path, notes={"n.md": PARENT_NOTE})
+    top = svc.search("zebra", include_parent=True)[0]
+    parent = top["parent"]
     # the parent reaches the sibling sections the matched chunk does not contain
     assert "alfa" in parent["text"] and "giris" in parent["text"]
     assert "alfa" not in top["text"]
-    json.dumps(top)
+    assert parent["chars"] == len(parent["text"])  # fits in RAG_PARENT_CHARS here
+
+
+def test_read_section_returns_the_parent_named_in_a_result(tmp_path):
+    svc, *_ = _make(tmp_path, notes={"n.md": PARENT_NOTE})
+    parent = svc.search("zebra")[0]["parent"]
+    sec = svc.read_section("n.md", parent["id"])
+    assert sec["path"] == "n.md" and sec["section"] == "Ana" and sec["truncated"] is False
+    assert sec["chars"] == parent["chars"] == len(sec["text"])
+    assert "giris" in sec["text"] and "alfa" in sec["text"] and "zebra" in sec["text"]
+
+
+def test_read_section_is_cut_from_its_start(tmp_path):
+    svc, *_ = _make(tmp_path, notes={"n.md": PARENT_NOTE}, env={"RAG_PARENT_CHARS": "300"})
+    parent = svc.search("zebra")[0]["parent"]
+    sec = svc.read_section("n.md", parent["id"])
+    assert sec["truncated"] is True and sec["chars"] == parent["chars"] > 300
+    assert len(sec["text"]) == 301 and sec["text"].endswith("…")
+    assert sec["text"].startswith("# Ana")
+
+
+def test_read_section_errors(tmp_path):
+    svc, *_ = _make(tmp_path, notes={"n.md": PARENT_NOTE})
+    with pytest.raises(ServiceError):
+        svc.read_section("n.md", 999)
+    with pytest.raises(ServiceError):
+        svc.read_section("yok.md", 0)
+
+
+def test_read_section_when_parents_are_off(tmp_path):
+    svc, *_ = _make(tmp_path, notes={"n.md": PARENT_NOTE}, env={"RAG_PARENT_CHARS": "0"})
+    with pytest.raises(ServiceError, match="switched off"):
+        svc.read_section("n.md", 0)
 
 
 def test_parent_is_none_when_it_adds_nothing(tmp_path):
@@ -121,9 +161,9 @@ def test_parent_is_none_when_it_adds_nothing(tmp_path):
     assert svc.search("kedi süt")[0]["parent"] is None
 
 
-def test_parent_is_cut_around_the_matched_chunk(tmp_path):
+def test_included_parent_text_is_cut_around_the_matched_chunk(tmp_path):
     svc, *_ = _make(tmp_path, notes={"n.md": PARENT_NOTE}, env={"RAG_PARENT_CHARS": "900"})
-    parent = svc.search("zebra")[0]["parent"]
+    parent = svc.search("zebra", include_parent=True)[0]["parent"]
     assert len(parent["text"]) <= 900 + 2
     assert "zebra" in parent["text"]
     assert parent["text"].startswith("…")
