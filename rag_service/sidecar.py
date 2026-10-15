@@ -32,9 +32,14 @@ def source_version(source: Path) -> tuple[str, int]:
     return stamp, stat.st_size
 
 
-def render(source: Path, markdown: str, kind: str, pages: int | None = None, hard: bool = False) -> str:
-    """The full note text: header + the converted body."""
-    stamp, size = source_version(source)
+def render(source: Path, markdown: str, kind: str, pages: int | None = None, hard: bool = False,
+           version: tuple[str, int] | None = None, extra: dict[str, str] | None = None) -> str:
+    """The full note text: header + the converted body.
+
+    `version` is the source's version taken *before* it was read (default: now), so a source
+    that changes while being converted is seen as changed next time. `extra` adds header lines.
+    """
+    stamp, size = version or source_version(source)
     lines = [
         "---",
         f"tags: [{kind}, kaynak-dosya]",
@@ -48,6 +53,8 @@ def render(source: Path, markdown: str, kind: str, pages: int | None = None, har
         lines.append(f"sayfa: {pages}")
     if hard:
         lines.append("zor: evet")
+    for key, value in (extra or {}).items():
+        lines.append(f"{key}: {value}")
     lines.append("---")
     return "\n".join(lines) + "\n\n" + markdown
 

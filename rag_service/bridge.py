@@ -13,6 +13,7 @@ import anyio
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from rag_service import convert
 from rag_service.client import ServiceClient
 from rag_service.config import ConfigError, load_config
 from rag_service.errors import ServiceError
@@ -24,6 +25,12 @@ INSTRUCTIONS = (
     "`path` and `parent.id` to read just the wider section its passage sits in."
 )
 
+CONVERT_INSTRUCTIONS = (
+    " To make PDF, DOCX, XLSX, PPTX, CSV, HTML and TXT files searchable, convert them to notes: "
+    "scan_files lists what is left, inspect_file checks one file, convert_file writes "
+    "`<file>.md` beside it (it never overwrites anything it did not make), convert_status counts."
+)
+
 
 async def _call(fn, *args):
     """Run a (blocking) client call off the event loop; show service errors to Claude as-is."""
@@ -33,8 +40,9 @@ async def _call(fn, *args):
         raise ToolError(str(exc)) from exc
 
 
-def create_bridge(client) -> MCPServer:
-    server = MCPServer("rag", instructions=INSTRUCTIONS)
+def create_bridge(client, cfg=None) -> MCPServer:
+    """`cfg` switches on the file-conversion tools (inspect_file, convert_file, ...)."""
+    server = MCPServer("rag", instructions=INSTRUCTIONS + (CONVERT_INSTRUCTIONS if cfg else ""))
 
     @server.tool()
     async def search_notes(query: str, k: int = 5) -> list[dict]:
@@ -55,7 +63,41 @@ def create_bridge(client) -> MCPServer:
         """Read one whole note. `path` is exactly the path a search result gave."""
         return await _call(client.read_note, path)
 
+    if cfg is not None:
+        _add_convert_tools(server, cfg)
     return server
+
+
+def _add_convert_tools(server: MCPServer, cfg) -> None:
+    """Tools that turn PDF/DOCX/XLSX/PPTX/CSV/HTML/TXT files into notes (see convert.py).
+    They run here, in the bridge process, so converting never blocks the search service."""
+
+    @server.tool()
+    async def inspect_file(path: str) -> dict:
+        """Look at a PDF/DOCX/XLSX/PPTX/CSV/HTML/TXT file without writing anything: type, size,
+        pages, `hard` (little or no text came out, e.g. a scanned PDF) and `status` (yeni,
+        yenile, güncel or atla). `path` is absolute or relative to a vault root."""
+        return await _call(convert.inspect_file, cfg, path)
+
+    @server.tool()
+    async def convert_file(path: str, markdown: str | None = None) -> dict:
+        """Write `<file>.md` next to the file so it becomes searchable. Creates a new note or
+        refreshes one rag_service made; never touches the source or a hand-written note.
+        `action` says what happened (yazıldı, yenilendi, atlandı, zor). A `zor` file was not
+        written: read it yourself and call again with `markdown` set to your text for it."""
+        return await _call(convert.convert_file, cfg, path, markdown)
+
+    @server.tool()
+    async def scan_files(folder: str | None = None, limit: int = 200) -> dict:
+        """List convertible files (under `folder`, default every vault root) with their state:
+        yeni = not converted yet, yenile = source changed, güncel = up to date, atla = a
+        hand-written note has that name. Files to act on come first."""
+        return await _call(convert.scan, cfg, folder, limit)
+
+    @server.tool()
+    async def convert_status() -> dict:
+        """Counts of convertible files over all vault roots, by state and by type."""
+        return await _call(convert.status, cfg)
 
 
 def main() -> int:
@@ -64,7 +106,7 @@ def main() -> int:
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    create_bridge(ServiceClient(cfg)).run()
+    create_bridge(ServiceClient(cfg), cfg).run()
     return 0
 
 
