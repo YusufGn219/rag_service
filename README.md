@@ -10,7 +10,7 @@ It can be used three ways:
 
 - **Command line:** `python -m rag_service.search "your question"`
 - **HTTP service:** a small FastAPI server on `127.0.0.1`
-- **MCP tools for Claude Code:** `search_notes`, `read_section` and `read_note`, through a thin stdio bridge
+- **MCP tools for Claude Code:** `search_notes`, `read_section` and `read_note`, through a thin stdio bridge. The same bridge has tools that turn PDF, Word, Excel, PowerPoint, CSV, HTML and text files into searchable notes (see [Other file types](#other-file-types))
 
 ## How it works
 
@@ -26,6 +26,29 @@ It can be used three ways:
    project index notes are ranked higher.
 
 Notes are multilingual; the author uses it with Turkish and English notes.
+
+## Other file types
+
+PDF, Word (`.docx`), Excel (`.xlsx`), PowerPoint (`.pptx`), CSV/TSV, HTML and plain text files
+can be made searchable too. The index only reads Markdown, so such a file is first converted to
+a note that is written **next to the original**: `report.pdf` becomes `report.pdf.md` in the same
+folder. Links and embeds that point at the original keep working, and the normal indexing run
+picks the new note up.
+
+- Each converted note starts with a small header (`uretici: rag_service`, the source name, and
+  the source's size and modified time). A later run uses it to tell whether the note is up to date.
+- A converted note is refreshed when its source changes. A note you wrote yourself is never
+  touched, even if it has the same name. The original file is never changed.
+- Files are only read and written inside the folders of `RAG_VAULT_ROOT`, and never inside
+  excluded folders.
+- A file that gives no usable text (a scanned PDF, an empty sheet) is not written. It is reported
+  as hard, and an agent can read it and supply the text (see below).
+
+Limits: no OCR; a spreadsheet sheet is cut after 2000 rows; files over 200 MB are refused; the
+old `.doc`, `.xls` and `.ppt` formats are not supported.
+
+The conversion is offered as MCP tools only (see [Claude Code (MCP)](#claude-code-mcp)); there is no
+command-line command for it.
 
 ## Requirements
 
@@ -121,11 +144,30 @@ claude mcp add rag --scope user -e PYTHONPATH=<project> -- <project>/.venv/Scrip
 
 `PYTHONPATH` is required, because Claude Code does not start the bridge from the project
 folder. The bridge starts the HTTP service in the background on the first tool call
-(log: `<RAG_INDEX_DIR>/server.log`). It offers three tools:
+(log: `<RAG_INDEX_DIR>/server.log`). It offers three search tools:
 
 - `search_notes(query, k=5)`
 - `read_section(path, id)`: the wider section of a result (its `parent.id`), shorter than the whole note
 - `read_note(path)`
+
+and four tools that convert files into notes (see [Other file types](#other-file-types)). `path` is
+absolute, or relative to a vault root as in search results:
+
+- `inspect_file(path)`: look at a file without writing anything: type, size, pages, whether text comes out
+- `convert_file(path, markdown=None)`: write the note next to the file. With `markdown`, that text is
+  saved instead (for a file that gave no text on its own)
+- `scan_files(folder=None, limit=200)`: list convertible files with their state
+- `convert_status()`: counts by state and by type
+
+The states are `yeni` (not converted yet), `yenile` (the source changed), `güncel` (up to date) and
+`atla` (a hand-written note has that name). `convert_file` answers `yazıldı` (written), `yenilendi`
+(refreshed), `atlandı` (skipped) or `zor` (hard, not written).
+
+The conversion agent in `agents/dosya-cevirici.md` (written in Turkish) uses these tools. It scans a
+folder, skips personal documents, old versions and code templates, converts the rest and reads
+scanned PDFs itself. To use it in Claude Code, copy the file to `.claude/agents/` in a project, or to
+`~/.claude/agents/` for all projects. It is plain Markdown with a small header, so its text can be
+reused with other agent frameworks.
 
 Check it with `claude mcp get rag`, then restart Claude Code.
 
@@ -150,6 +192,9 @@ The tests use fake models and do not need the downloads.
 
 The index, models, evaluation questions and audit reports live under `data/` and are
 listed in `.gitignore`, so they are not committed. Do not commit your `.env`.
+
+Converted notes are new files inside your notes folders. If one of those folders is a git
+repository you publish, review the converted notes before committing them.
 
 ## Status
 
@@ -181,7 +226,7 @@ sağlayıcısı anahtarı gerekmez. Türkçe ve İngilizce notlarla birlikte kul
 
 - **Komut satırı:** `python -m rag_service.search "sorun"`
 - **HTTP servisi:** `127.0.0.1` üzerinde küçük bir FastAPI sunucusu
-- **Claude Code için MCP araçları:** `search_notes`, `read_section` ve `read_note`
+- **Claude Code için MCP araçları:** `search_notes`, `read_section` ve `read_note`. Aynı köprüde PDF, Word, Excel, PowerPoint, CSV, HTML ve metin dosyalarını aranabilir nota çeviren araçlar da var ([Diğer dosya türleri](#diğer-dosya-türleri))
 
 ## Nasıl çalışır?
 
@@ -193,6 +238,27 @@ sağlayıcısı anahtarı gerekmez. Türkçe ve İngilizce notlarla birlikte kul
    puanlanır. Soru başına yaklaşık 2-3 saniye ekler, doğruluğu artırır.
 4. **Güncellik:** "X'in son durumu ne" türü sorularda daha yeni tarihli notlar ve proje
    indeks notları öne çıkarılır.
+
+## Diğer dosya türleri
+
+PDF, Word (`.docx`), Excel (`.xlsx`), PowerPoint (`.pptx`), CSV/TSV, HTML ve düz metin dosyaları da aranabilir hale getirilebilir. 
+İndeks yalnızca Markdown okuduğu için böyle bir dosya önce **orijinalin yanına** yazılan bir nota çevrilir: `rapor.pdf`, aynı klasörde `rapor.pdf.md` olur.
+Orijinale giden bağlantılar ve gömülü yollar bozulmaz, normal indeksleme turu yeni notu kendisi alır.
+
+- Her çevrilmiş not küçük bir künyeyle başlar (`uretici: rag_service`, kaynağın adı, boyutu ve
+  değişim zamanı). Sonraki çalıştırma notun güncel olup olmadığını buradan anlar.
+- Kaynak değişince çevrilmiş not yenilenir. Senin elle yazdığın bir nota, aynı ada sahip olsa
+  bile, dokunulmaz. Orijinal dosya hiçbir zaman değiştirilmez.
+- Dosyalar yalnızca `RAG_VAULT_ROOT` klasörlerinin içinde okunur ve yazılır, hariç tutulan
+  klasörlere hiç girilmez.
+- Kullanılabilir metin vermeyen dosya (taranmış PDF, boş sayfa) yazılmaz, "zor" diye bildirilir;
+  bir agent onu okuyup metni kendisi verebilir (aşağıya bak).
+
+Sınırlar: OCR yok; bir tablo sayfası 2000 satırdan sonra kesilir; 200 MB'tan büyük dosya
+reddedilir; eski `.doc`, `.xls` ve `.ppt` biçimleri desteklenmez.
+
+Çevirme yalnızca MCP araçlarıyla yapılır (aşağıdaki Claude Code bölümüne bak); komut satırı
+karşılığı yoktur.
 
 ## Gereksinimler
 
@@ -266,6 +332,25 @@ claude mcp add rag --scope user -e PYTHONPATH=<proje> -- <proje>/.venv/Scripts/p
 araç çağrısında HTTP servisini arka planda kendisi başlatır. Kontrol için
 `claude mcp get rag` çalıştır, sonra Claude Code'u yeniden başlat.
 
+Arama araçlarına ek olarak dosyaları nota çeviren dört araç gelir. `path` mutlak yol ya da arama
+sonuçlarındaki gibi vault köküne göreli yol olabilir:
+
+- `inspect_file(path)`: hiçbir şey yazmadan dosyaya bakar (tür, boyut, sayfa sayısı, metin çıkıp çıkmadığı)
+- `convert_file(path, markdown=None)`: notu dosyanın yanına yazar. `markdown` verilirse okuyucunun
+  çıktısı yerine o metin kaydedilir (kendi başına metin vermeyen dosyalar için)
+- `scan_files(folder=None, limit=200)`: çevrilebilir dosyaları durumlarıyla listeler
+- `convert_status()`: duruma ve türe göre sayılar
+
+Durumlar: `yeni` (henüz çevrilmedi), `yenile` (kaynak değişti), `güncel`, `atla` (aynı adlı elle
+yazılmış not var). `convert_file` şunlardan birini söyler: `yazıldı`, `yenilendi`, `atlandı`,
+`zor` (yazılmadı).
+
+`agents/dosya-cevirici.md` (Türkçe yazılmış) bu araçları kullanan çeviri agent'ıdır. Bir klasörü
+tarar, kişisel belgeleri, eski sürümleri ve kod şablonlarını atlar, kalanını çevirir, taranmış
+PDF'leri kendisi okur. Claude Code'da kullanmak için dosyayı bir projedeki `.claude/agents/`
+klasörüne ya da tüm projeler için `~/.claude/agents/` klasörüne kopyala. Düz Markdown ve küçük bir
+başlıktan oluştuğu için metni başka agent çerçevelerinde de kullanılabilir.
+
 ## Ek araçlar ve testler
 
 - `python -m rag_service.evaluate`: kendi soru listene karşı arama kalitesini sayıyla
@@ -277,6 +362,9 @@ araç çağrısında HTTP servisini arka planda kendisi başlatır. Kontrol içi
 
 İndeks, modeller, değerlendirme soruları ve denetim raporları `data/` altındadır ve
 `.gitignore` içindedir, commit edilmez. `.env` dosyanı da commit etme.
+
+Çevrilmiş notlar, notlarının klasörlerinde oluşan yeni dosyalardır. Bu klasörlerden biri
+yayınladığın bir git deposuysa, commit etmeden önce çevrilmiş notlara bak.
 
 ## Lisans
 
