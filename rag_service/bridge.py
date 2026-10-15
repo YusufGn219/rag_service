@@ -75,8 +75,10 @@ def _add_convert_tools(server: MCPServer, cfg) -> None:
     @server.tool()
     async def inspect_file(path: str) -> dict:
         """Look at a PDF/DOCX/XLSX/PPTX/CSV/HTML/TXT file without writing anything: type, size,
-        pages, `hard` (little or no text came out, e.g. a scanned PDF) and `status` (yeni,
-        yenile, güncel or atla). `path` is absolute or relative to a vault root."""
+        pages, `hard` (little or no text came out, e.g. a scanned PDF), `modified` (last change,
+        UTC), `preview` (how the text starts, about 300 characters; compare two files with it)
+        and `status` (yeni, yenile, güncel or atla). `path` is absolute or relative to a vault
+        root."""
         return await _call(convert.inspect_file, cfg, path)
 
     @server.tool()

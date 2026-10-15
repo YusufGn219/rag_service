@@ -134,6 +134,17 @@ def test_inspect_writes_nothing(vault, cfg):
     assert info["kind"] == "txt" and info["status"] == sidecar.NEW and not info["hard"]
     assert info["note"] == "Not.txt.md"
     assert not (vault / "Not.txt.md").exists()
+    assert info["preview"] == "ilk satır ikinci satır"  # the "# Not" title line is not part of it
+    assert info["modified"].endswith("+00:00") and info["modified"].startswith("20")
+
+
+def test_inspect_preview_skips_page_markers_and_is_cut(vault, cfg):
+    src = _txt(vault, "Uzun.txt", text="Başlık metni " + "kelime " * 200)
+    info = convert.inspect_file(cfg, str(src))
+    assert info["preview"].startswith("Başlık metni kelime")
+    assert len(info["preview"]) <= convert.PREVIEW_CHARS + 1 and info["preview"].endswith("…")
+    assert convert._preview("# Rapor\n\n## Sayfa 1\n\nmetin bir\n\n## Sayfa 2\n\nmetin iki\n") == "metin bir metin iki"
+    assert convert._preview("# Boş\n") == ""
 
 
 def test_scan_orders_actionable_first_and_counts(vault, cfg):

@@ -7,7 +7,9 @@ Safety rules (they live here, not in the caller):
 - The source file itself is never changed, moved or deleted.
 """
 import os
+import re
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rag_service import readers, sidecar
@@ -17,6 +19,8 @@ from rag_service.scanner import _split_excludes
 
 MAX_BYTES = 200 * 1024 * 1024  # larger files are refused
 MAX_SCAN_ROWS = 200  # files listed by scan() at most
+PREVIEW_CHARS = 300  # how much of the text inspect_file shows
+_PAGE_MARKER = re.compile(r"^## Sayfa \d+$")
 
 WRITTEN = "yazıldı"
 REFRESHED = "yenilendi"
@@ -72,13 +76,25 @@ def _read(path: Path) -> readers.Extracted:
         raise ServiceError(str(exc)) from None
 
 
+def _preview(markdown: str, limit: int = PREVIEW_CHARS) -> str:
+    """The first `limit` characters of the real content: without the title line (it is just the
+    file name) and the "## Sayfa N" markers, whitespace squeezed to single spaces."""
+    lines = [ln for ln in markdown.split("\n")[1:] if not _PAGE_MARKER.match(ln)]
+    text = " ".join(" ".join(lines).split())
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
 def inspect_file(cfg: Config, raw: str) -> dict:
-    """Look at a file without writing anything: type, size, pages, whether text comes out."""
+    """Look at a file without writing anything: type, size, pages, whether text comes out, when it
+    last changed and how its text starts (to tell versions of one document from different ones)."""
     src = _source(cfg, raw)
     ex = _read(src)
+    stat = src.stat()
+    modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds")
     return {
-        "path": cfg.note_key(src), "kind": ex.kind, "bytes": src.stat().st_size, "pages": ex.pages,
-        "chars": len(ex.markdown), "hard": ex.hard, "reason": ex.reason,
+        "path": cfg.note_key(src), "kind": ex.kind, "bytes": stat.st_size, "pages": ex.pages,
+        "chars": len(ex.markdown), "hard": ex.hard, "reason": ex.reason, "modified": modified,
+        "preview": _preview(ex.markdown),
         "status": sidecar.plan(src), "note": cfg.note_key(sidecar.sidecar_path(src)),
     }
 

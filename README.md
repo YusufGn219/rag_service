@@ -153,7 +153,9 @@ folder. The bridge starts the HTTP service in the background on the first tool c
 and four tools that convert files into notes (see [Other file types](#other-file-types)). `path` is
 absolute, or relative to a vault root as in search results:
 
-- `inspect_file(path)`: look at a file without writing anything: type, size, pages, whether text comes out
+- `inspect_file(path)`: look at a file without writing anything: type, size, pages, whether text comes
+  out, when it last changed (`modified`) and how its text starts (`preview`, about 300 characters),
+  so two files can be compared to tell versions of one document from different documents
 - `convert_file(path, markdown=None)`: write the note next to the file. With `markdown`, that text is
   saved instead (for a file that gave no text on its own)
 - `scan_files(folder=None, limit=200)`: list convertible files with their state
@@ -335,7 +337,9 @@ araç çağrısında HTTP servisini arka planda kendisi başlatır. Kontrol içi
 Arama araçlarına ek olarak dosyaları nota çeviren dört araç gelir. `path` mutlak yol ya da arama
 sonuçlarındaki gibi vault köküne göreli yol olabilir:
 
-- `inspect_file(path)`: hiçbir şey yazmadan dosyaya bakar (tür, boyut, sayfa sayısı, metin çıkıp çıkmadığı)
+- `inspect_file(path)`: hiçbir şey yazmadan dosyaya bakar (tür, boyut, sayfa sayısı, metin çıkıp
+  çıkmadığı, son değişim zamanı `modified` ve metnin nasıl başladığı `preview`, yaklaşık 300 karakter);
+  iki dosyanın aynı belgenin sürümleri mi, farklı belgeler mi olduğu buradan anlaşılır
 - `convert_file(path, markdown=None)`: notu dosyanın yanına yazar. `markdown` verilirse okuyucunun
   çıktısı yerine o metin kaydedilir (kendi başına metin vermeyen dosyalar için)
 - `scan_files(folder=None, limit=200)`: çevrilebilir dosyaları durumlarıyla listeler
