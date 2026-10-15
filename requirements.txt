@@ -6,3 +6,9 @@ huggingface_hub
 fastapi
 uvicorn
 mcp
+
+pypdf
+python-docx
+python-pptx
+openpyxl
+beautifulsoup4
