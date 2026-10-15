@@ -14,3 +14,5 @@ data/eval/
 
 # Audit reports and decisions (note paths are private)
 data/audit_*
+
+.claude
